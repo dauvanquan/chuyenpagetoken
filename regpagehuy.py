@@ -46,7 +46,7 @@ NAME_TYPE = "vn"
 INTERACT_MIN = 300
 INTERACT_MAX = 600
 
-VERSION = "1.5"
+VERSION = "1.6"
 AUTHOR = "KhuyCoderxThaiViLuan"
 
 console = Console() if _HAS_RICH else None
@@ -60,7 +60,7 @@ dashboard_stats = {
     "spin_tick": 0,
 }
 log_buffer = []
-MAX_LOG_LINES = 15
+MAX_LOG_LINES = 5
 
 _stop_flag = False
 
@@ -81,16 +81,17 @@ def _term_height():
 
 def _dash_update(idx, **kw):
     st = dashboard_lines.setdefault(idx, {
-        "status": "khởi động",
+        "status": "Khởi động",
         "success": 0,
         "fail": 0,
         "reason": "",
         "finished": False,
         "bar": None,
         "flag": None,
+        "last_was_fail": False,
+        "uid": None,
         "start_ts": time.time(),
         "end_ts": None,
-        "uid": "",
     })
     for k, v in kw.items():
         if k == "done":
@@ -123,26 +124,19 @@ def _gradient_bar(current, total, length=18, btype=None):
     n_filled = int(length * ratio)
     n_empty = length - n_filled
 
-    if btype == "delay":
-        fill_style = "dark_orange"
-        empty_style = "grey30"
-    elif btype == "reg":
-        fill_style = "green"
-        empty_style = "grey30"
-    else:
-        if ratio < 0.3:
-            fill_style = "red"
-        elif ratio < 0.6:
-            fill_style = "yellow"
-        elif ratio < 0.85:
-            fill_style = "green"
-        else:
-            fill_style = "cyan"
-        empty_style = "grey30"
-
     t = Text()
-    t.append("▰" * n_filled, style=fill_style)
-    t.append("▱" * n_empty, style=empty_style)
+    for i in range(n_filled):
+        pos = i / max(1, length - 1)
+        if pos < 0.5:
+            r = 255
+            g = int(255 * (pos * 2))
+            b = 0
+        else:
+            r = int(255 * (1 - (pos - 0.5) * 2))
+            g = 255
+            b = 0
+        t.append("▰", style=f"rgb({r},{g},{b})")
+    t.append("▱" * n_empty, style="grey30")
     return t
 
 
@@ -192,7 +186,6 @@ def render_dashboard():
         padding=(0, 1)
     ))
 
-    # ===== Bảng điều khiển có thêm cột UID =====
     tbl = Table(
         show_header=True, header_style="bold gold1",
         expand=True, box=box.SIMPLE,
@@ -200,8 +193,7 @@ def render_dashboard():
         padding=(0, 0)
     )
     tbl.add_column("#", width=3, justify="center", no_wrap=True)
-    tbl.add_column("LUỒNG", width=6, justify="center", no_wrap=True)
-    tbl.add_column("UID", width=17, no_wrap=True, overflow="ellipsis")
+    tbl.add_column("UID", width=20, justify="center", no_wrap=True)
     tbl.add_column("TRẠNG THÁI", width=24, no_wrap=True, overflow="ellipsis")
     tbl.add_column("TIẾN TRÌNH", width=18, no_wrap=True)
     tbl.add_column("OK", width=4, justify="right", no_wrap=True)
@@ -212,7 +204,6 @@ def render_dashboard():
         tbl.add_row(
             Text("-", style="cyan"),
             Text("--", style="grey37"),
-            Text("-", style="grey37"),
             Text("Đang chờ dữ liệu...", style="grey37"),
             Text("▱" * 14, style="grey37"),
             Text("0", style="grey37"),
@@ -229,6 +220,8 @@ def render_dashboard():
                 icon = Text("X", style="bold red")
             elif flag == "block":
                 icon = Text("B", style="bold magenta")
+            elif flag == "rate_limit":
+                icon = Text("R", style="bold yellow")
             elif flag == "die":
                 icon = Text("D", style="bold red")
             elif st["finished"]:
@@ -236,44 +229,41 @@ def render_dashboard():
             else:
                 icon = Text("*", style="cyan")
 
-            uid_val = st.get("uid") or ""
-            if uid_val:
-                uid_txt = Text(str(uid_val)[:16], style="bold cyan")
-            else:
-                uid_txt = Text("-", style="grey37")
-
             if flag == "stop":
                 status = Text("LUỒNG ĐÃ DỪNG", style="bold red")
             elif flag == "block":
                 status = Text("BỊ BLOCK", style="bold magenta")
+            elif flag == "rate_limit":
+                status = Text("RATE LIMIT", style="bold yellow")
             elif flag == "die":
                 status = Text("DIE", style="bold red")
             elif st["finished"]:
-                status = Text(f"v {st['status']}", style="bold blue")
+                status = Text(f"{st['status']}", style="bold blue")
             else:
-                if s > 0 and f == 0:
+                last_was_fail = st.get("last_was_fail", False)
+                if last_was_fail and f > 0:
+                    col = "red" if s == 0 else "yellow"
+                elif s > 0:
                     col = "green"
-                elif f > 0 and s == 0:
+                elif f > 0:
                     col = "red"
-                elif s > 0 and f > 0:
-                    col = "yellow"
                 else:
                     col = "cyan"
                 status = Text(_shorten(st.get("status", ""), 22), style=col)
 
             bar_info = st.get("bar")
-            if flag in ("stop", "block", "die") or st["finished"]:
-                prog = _gradient_bar(1, 1, 10)
+            if flag in ("stop", "block", "die", "rate_limit") or st["finished"]:
+                prog = _gradient_bar(1, 1, 12)
             elif bar_info:
                 cur, tot, btype = bar_info
-                prog = _gradient_bar(cur, tot, 9, btype=btype)
+                prog = _gradient_bar(cur, tot, 10, btype=btype)
                 prog.append(" ")
                 if btype == "reg":
                     prog.append(f"{int(cur)}/{int(tot)}", style="grey70")
                 elif btype == "delay":
                     prog.append(f"{int(max(0, tot-cur))}s", style="grey70")
             else:
-                prog = Text("▱" * 10, style="grey37")
+                prog = Text("▱" * 12, style="grey37")
 
             start_ts = st.get("start_ts", now)
             if st["finished"] and st.get("end_ts"):
@@ -290,8 +280,13 @@ def render_dashboard():
             ok_txt = Text(str(s), style="bold green" if s > 0 else "grey37")
             fail_txt = Text(str(f), style="bold red" if f > 0 else "grey37")
 
-            tbl.add_row(icon, Text(f"[{idx}]", style="bold white"),
-                        uid_txt, status, prog, ok_txt, fail_txt, time_txt)
+            uid = st.get("uid")
+            if uid:
+                label = Text(f"{uid}", style="bold white")
+            else:
+                label = Text(f"[{idx}]", style="bold white")
+
+            tbl.add_row(icon, label, status, prog, ok_txt, fail_txt, time_txt)
 
     elements.append(Panel(
         tbl,
@@ -410,11 +405,9 @@ def print_welcome():
     guide.add_column("T", style="bold white")
     guide.add_row("1.", "Công cụ tự động [bold green]tạo Page PRO5[/] từ token Facebook (Android API).")
     guide.add_row("2.", "Hỗ trợ [bold cyan]chạy đa luồng[/] - mỗi token một luồng riêng.")
-    guide.add_row("3.", "Chỉ cần nhập [bold yellow]token[/], [bold green]tool sẽ tự login & check UID[/].")
-    guide.add_row("4.", "Token [bold red]lỗi sẽ được yêu cầu nhập lại[/] - Enter 2 lần để kết thúc.")
-    guide.add_row("5.", "Nếu token [bold red]die[/] trong khi tạo thì luồng dừng ngay.")
-    guide.add_row("6.", "Kết quả lưu vào [bold cyan]pro5_created.txt[/].")
-    guide.add_row("7.", f"Tác giả: [bold gold1]{AUTHOR}[/]  |  Phiên bản: [bold gold1]v{VERSION}[/]")
+    guide.add_row("3.", "Token sẽ được [bold green]check UID ngay khi nhập[/], token lỗi nhập lại.")
+    guide.add_row("4.", "Proxy nạp từ [bold yellow]file .txt[/], tự đổi proxy khi tạo page lỗi.")
+    guide.add_row("5.", f"Tác giả: [bold gold1]{AUTHOR}[/]  |  Phiên bản: [bold gold1]v{VERSION}[/]")
     console.print(Panel(guide, title="[bold gold1]HƯỚNG DẪN SỬ DỤNG[/]",
                         border_style="gold1", box=box.ROUNDED, padding=(0, 1)))
 
@@ -455,6 +448,26 @@ def _looks_like_proxy(s):
     if re.match(r'^[\w\.\-]+:[\w\.\-]+@[\w\.\-]+:\d{2,5}$', s): return True
     if _split_4parts_proxy(s): return True
     return False
+
+
+def load_proxies_from_file(filepath):
+    """Đọc danh sách proxy từ file txt (mỗi dòng 1 proxy)."""
+    proxies = []
+    if not filepath:
+        return proxies
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                fmt = format_proxy(line)
+                if fmt:
+                    proxies.append(fmt)
+    except Exception as e:
+        if console:
+            console.print(f"[bold red]Lỗi đọc file proxy: {e}[/]")
+    return proxies
 
 
 def verify_proxy(proxy_str, timeout=12):
@@ -992,11 +1005,22 @@ def _extract_pp_id_android(a, js):
 def _extract_error_android(a, js):
     if a:
         m = re.search(r'\(bk\.action\.io\.Toast,\s*"([^"]+)"', a)
-        if m: return m.group(1)
+        if m:
+            msg = m.group(1)
+            if is_rate_limit(msg):
+                return f"RATE_LIMIT: {msg}"
+            return msg
         for kw in ("create_error", "profile_creation_error", "error_message"):
-            if kw in a: return f"Detected {kw}"
+            if kw in a:
+                if is_rate_limit(a):
+                    return f"RATE_LIMIT: Detected {kw}"
+                return f"Detected {kw}"
     if "errors" in js:
-        try: return json.dumps(js["errors"])[:300]
+        try:
+            s = json.dumps(js["errors"])[:300]
+            if is_rate_limit(s):
+                return f"RATE_LIMIT: {s}"
+            return s
         except: pass
     return None
 
@@ -1022,11 +1046,35 @@ TOKEN_DIE_KW = ["OAuthException", "Invalid OAuth access token", "access token ha
                 "user is blocked", '"code":190', '"code":102', '"code":467',
                 '"code":458', '"code":459', '"code":460', '"code":463', '"code":464']
 
+RATE_LIMIT_KW = [
+    "gần đây bạn đã tạo quá nhiều trang",
+    "gan day ban da tao qua nhieu trang",
+    "bạn đã tạo quá nhiều trang",
+    "ban da tao qua nhieu trang",
+    "quá nhiều trang",
+    "qua nhieu trang",
+    "too many pages",
+    "you've created too many pages",
+    "you have created too many pages",
+    "recently created too many",
+    "create too many pages",
+    "rate limit",
+    "rate_limit",
+    "too many requests",
+    "quá nhiều yêu cầu",
+]
+
 
 def is_die(text):
     if not text: return False
     t = text.lower()
     return any(k.lower() in t for k in TOKEN_DIE_KW)
+
+
+def is_rate_limit(text):
+    if not text: return False
+    t = str(text).lower()
+    return any(k.lower() in t for k in RATE_LIMIT_KW)
 
 
 def check_user(token, proxy=None):
@@ -1404,7 +1452,44 @@ def create_pro5_android(token, proxy=None, cc="VN", tz="Asia/Ho_Chi_Minh",
     }, False, session, device
 
 
-def run_token(tk_idx, acc, limit, output_file, country_choice="VN", cc="VN", tz="Asia/Ho_Chi_Minh"):
+def _attempt_create_page(token, proxy, cc, tz, device, thread_idx):
+    """Bọc create_pro5_android với xử lý ngoại lệ.
+    Trả về (ok, res, die, device)."""
+    try:
+        ok, res, die, _session, device = create_pro5_android(
+            token, proxy, cc=cc, tz=tz, device=device, thread_idx=thread_idx)
+        return ok, res, die, device
+    except Exception as e:
+        return False, f"Exception: {str(e)[:100]}", False, device
+
+
+def _wait_with_dash(tk_idx, seconds, label_prefix, current_proxy=None):
+    """Chờ với progress bar. Trả về True nếu bị dừng giữa chừng."""
+    start = time.time()
+    while time.time() - start < seconds:
+        if _stop_flag:
+            return True
+        elapsed = time.time() - start
+        _dash_update(tk_idx, status=f"{label_prefix} {int(seconds - elapsed)}s",
+                     bar=(elapsed, seconds, "delay"))
+        time.sleep(0.5)
+    return False
+
+
+def _switch_proxy(proxy_pool, current_proxy):
+    """Chọn proxy khác từ pool."""
+    if not proxy_pool:
+        return current_proxy
+    if len(proxy_pool) == 1:
+        return proxy_pool[0]
+    candidates = [p for p in proxy_pool if p != current_proxy]
+    if not candidates:
+        candidates = proxy_pool
+    return random.choice(candidates)
+
+
+def run_token(tk_idx, acc, limit, country_choice="VN", cc="VN", tz="Asia/Ho_Chi_Minh",
+              proxy_pool=None):
     success = 0
     fail = 0
     fail_streak = 0
@@ -1415,25 +1500,37 @@ def run_token(tk_idx, acc, limit, output_file, country_choice="VN", cc="VN", tz=
     target_total = None
 
     token = acc.get("token", "") or ""
-    token_proxy = acc.get("proxy") or None
-    uid = acc.get("uid", "") or ""
+    current_proxy = acc.get("proxy") or (random.choice(proxy_pool) if proxy_pool else None)
 
     if not token:
-        _dash_update(tk_idx, status="Thiếu token", done=True, flag="die", uid=uid)
-        _update_stat(tk_idx, "", token_proxy, "die", 0, 0, "Không có token")
+        _dash_update(tk_idx, status="Thiếu token", done=True, flag="die")
+        _update_stat(tk_idx, "", current_proxy, "die", 0, 0, "Không có token")
         return 0
 
-    _dash_update(tk_idx, uid=uid)
     _dash_update(tk_idx, status="Tạo device Android")
     device = gen_android_device(cc, tz)
 
-    if token_proxy:
+    # ==== Xác thực proxy ban đầu (thử vài proxy từ pool nếu có) ====
+    if current_proxy:
         _dash_update(tk_idx, status="Kiểm tra proxy")
-        pv = verify_proxy(token_proxy, timeout=12)
+        pv = verify_proxy(current_proxy, timeout=12)
+        if not pv["alive"] and proxy_pool and len(proxy_pool) > 1:
+            tried = {current_proxy}
+            for _ in range(min(4, len(proxy_pool))):
+                alt = random.choice(proxy_pool)
+                if alt in tried:
+                    continue
+                tried.add(alt)
+                pv2 = verify_proxy(alt, timeout=8)
+                if pv2["alive"]:
+                    current_proxy = alt
+                    pv = pv2
+                    _push_log(tk_idx, "[dim cyan]Đã đổi proxy ban đầu vì proxy cũ die[/]")
+                    break
         if not pv["alive"]:
             _dash_update(tk_idx, status="Proxy die",
                          reason=f"Proxy: {pv['reason'][:40]}", done=True, flag="die")
-            _update_stat(tk_idx, token, token_proxy, "proxy_die", 0, 0,
+            _update_stat(tk_idx, token, current_proxy, "proxy_die", 0, 0,
                          f"Proxy die: {pv['reason'][:80]}")
             return 0
         if country_choice == "AUTO":
@@ -1448,31 +1545,40 @@ def run_token(tk_idx, acc, limit, output_file, country_choice="VN", cc="VN", tz=
                     device["accept_lang"] = loc[2]
                 cc, tz = new_cc, new_tz
 
-    _update_stat(tk_idx, token, token_proxy, "running", 0, 0)
+    _update_stat(tk_idx, token, current_proxy, "running", 0, 0)
+
+    _dash_update(tk_idx, status="Lấy UID token")
+    uid_token, _, err_uid = check_user(token, current_proxy)
+    if uid_token:
+        _dash_update(tk_idx, uid=uid_token)
 
     _dash_update(tk_idx, status="Kiểm tra token")
-    need, existing, chk, _ = calc_needed(token, token_proxy, limit, thread_idx=tk_idx)
+    need, existing, chk, _ = calc_needed(token, current_proxy, limit, thread_idx=tk_idx)
 
     if chk == "token_die":
+        if not dashboard_lines.get(tk_idx, {}).get("uid"):
+            uid_try, _, _ = check_user(token, None)
+            if uid_try:
+                _dash_update(tk_idx, uid=uid_try)
         _dash_update(tk_idx, status="Token die", reason="token die",
                      done=True, flag="die")
-        _update_stat(tk_idx, token, token_proxy, "die", 0, 0, "Token die")
+        _update_stat(tk_idx, token, current_proxy, "die", 0, 0, "Token die")
         return 0
     if chk == "proxy_die":
         _dash_update(tk_idx, status="Proxy die", reason="proxy die",
                      done=True, flag="die")
-        _update_stat(tk_idx, token, token_proxy, "proxy_die", 0, 0, "Proxy die")
+        _update_stat(tk_idx, token, current_proxy, "proxy_die", 0, 0, "Proxy die")
         return 0
     if chk == "unknown_soft":
         _dash_update(tk_idx, status="Không check được page",
                      reason="Không kiểm tra được số page", done=True, flag="die")
-        _update_stat(tk_idx, token, token_proxy, "die", 0, 0,
+        _update_stat(tk_idx, token, current_proxy, "die", 0, 0,
                      "Không kiểm tra được page - dừng an toàn")
         _push_log(tk_idx, "[bold red]Không check được page - dừng luồng để an toàn[/]")
         return 0
     if chk == "already_enough":
         _dash_update(tk_idx, status=f"Đã có {existing} page", done=True)
-        _update_stat(tk_idx, token, token_proxy, "already_enough", 0, 0,
+        _update_stat(tk_idx, token, current_proxy, "already_enough", 0, 0,
                      f"Đã có {existing} page", existing)
         return 0
     if chk == "ok":
@@ -1480,39 +1586,95 @@ def run_token(tk_idx, acc, limit, output_file, country_choice="VN", cc="VN", tz=
         target_total = existing + need
         limit = need
 
-    _update_stat(tk_idx, token, token_proxy, "running", 0, 0, existing=existing)
+    _update_stat(tk_idx, token, current_proxy, "running", 0, 0, existing=existing)
 
-    session = requests.Session()
-    if token_proxy:
-        fmt = format_proxy(token_proxy) if not token_proxy.startswith(("http://", "https://", "socks")) else token_proxy
-        session.proxies.update({"http": fmt, "https": fmt})
-
+    # ==================== VÒNG LẶP TẠO PAGE ====================
     while success < limit:
         if _stop_flag:
             reason = "Người dùng dừng"
             _dash_update(tk_idx, status="Dừng", done=True, flag="stop")
             break
 
+        # ---- Lần thử 1 ----
         _dash_update(tk_idx, status=f"Đang tạo ({success}/{limit})",
                      bar=(success, limit, "reg"))
-        try:
-            ok, res, die, session, device = create_pro5_android(
-                token, token_proxy, cc=cc, tz=tz, device=device, thread_idx=tk_idx)
-        except Exception as e:
-            ok, res, die = False, f"Exception: {str(e)[:100]}", False
+        ok, res, die, device = _attempt_create_page(
+            token, current_proxy, cc, tz, device, tk_idx)
 
+        # ---- Xử lý lỗi lần 1: chờ 30s + đổi proxy + thử lại ----
+        if not ok and not die:
+            res_str = str(res)
+
+            # Nếu là block/rate_limit thì dừng luôn (không retry vô ích)
+            if "Block Limit" in res_str or "Bị chặn" in res_str:
+                fail += 1
+                _dash_bump_fail(1)
+                status = "blocked"; reason = res_str[:200]
+                _dash_update(tk_idx, status="BỊ BLOCK", fail=fail,
+                             reason=reason[:60], done=True, flag="block")
+                _update_stat(tk_idx, token, current_proxy, "blocked",
+                             success, fail, reason, existing)
+                _push_log(tk_idx, "[bold magenta]DỪNG LUỒNG - Token bị block[/]")
+                break
+            if is_rate_limit(res_str):
+                fail += 1
+                _dash_bump_fail(1)
+                status = "rate_limit"; reason = res_str[:200]
+                _dash_update(tk_idx, status="RATE LIMIT", fail=fail,
+                             reason=reason[:60], done=True, flag="rate_limit")
+                _update_stat(tk_idx, token, current_proxy, "rate_limit",
+                             success, fail, reason, existing)
+                _push_log(tk_idx, "[bold magenta]DỪNG LUỒNG - Gần đây đã tạo quá nhiều trang[/]")
+                break
+
+            fail += 1
+            _dash_bump_fail(1)
+            _update_stat(tk_idx, token, current_proxy, "error",
+                         success, fail, res_str[:120], existing=existing)
+            _push_log(tk_idx, f"[bold red]Lỗi tạo page:[/] {res_str[:80]}")
+            _push_log(tk_idx, "[bold yellow]Chờ 30s và đổi proxy để thử lại...[/]")
+            _dash_update(tk_idx, last_was_fail=True)
+
+            if _wait_with_dash(tk_idx, 30, "Chờ đổi proxy"):
+                break
+
+            # Đổi proxy mới
+            old_proxy = current_proxy
+            current_proxy = _switch_proxy(proxy_pool, current_proxy)
+            if current_proxy != old_proxy:
+                _push_log(tk_idx, "[bold cyan]Đã đổi proxy mới, thử lại page...[/]")
+            else:
+                _push_log(tk_idx, "[bold cyan]Thử lại với proxy hiện tại...[/]")
+
+            # ---- Lần thử 2 (retry) ----
+            _dash_update(tk_idx, status=f"Thử lại ({success}/{limit})",
+                         bar=(success, limit, "reg"))
+            ok, res, die, device = _attempt_create_page(
+                token, current_proxy, cc, tz, device, tk_idx)
+
+        # ---- Token die ----
+        if die:
+            fail += 1
+            fail_streak += 1
+            _dash_bump_fail(1)
+            status = "die"; reason = "Token die"
+            _dash_update(tk_idx, status="Token die", fail=fail,
+                         reason=reason, done=True, flag="die")
+            _update_stat(tk_idx, token, current_proxy, "die",
+                         success, fail, reason, existing)
+            _push_log(tk_idx, "[bold red]Token die - dừng luồng[/]")
+            break
+
+        # ---- Thành công ----
         if ok:
             success += 1
             fail_streak = 0
             _dash_bump_ok(1)
             _dash_update(tk_idx, status=f"+1 ({success}/{limit})",
-                         success=success, bar=(success, limit, "reg"))
-            _update_stat(tk_idx, token, token_proxy, "running",
+                         success=success, bar=(success, limit, "reg"),
+                         last_was_fail=False)
+            _update_stat(tk_idx, token, current_proxy, "running",
                          success, fail, existing=existing)
-            try:
-                with open(output_file, "a", encoding="utf-8") as fo:
-                    fo.write(f"{res['id']}|{res['name']}|{res['token']}|android|{res.get('brand','?')}|{res.get('device','?')}\n")
-            except: pass
 
             cur_pages_str = ""
             broke = False
@@ -1520,7 +1682,7 @@ def run_token(tk_idx, acc, limit, output_file, country_choice="VN", cc="VN", tz=
             if success < limit and target_total is not None:
                 _dash_update(tk_idx, status="Kiểm tra lại Page")
                 try:
-                    cur_pages, st2, _ = check_pages(token, token_proxy, thread_idx=tk_idx)
+                    cur_pages, st2, _ = check_pages(token, current_proxy, thread_idx=tk_idx)
                     if st2 == "ok" and cur_pages is not None:
                         cur_pages_str = f" [dim]→ Có {cur_pages}/{target_total} page[/]"
                         _dash_update(tk_idx, status=f"Đã check: {cur_pages}/{target_total}")
@@ -1551,109 +1713,109 @@ def run_token(tk_idx, acc, limit, output_file, country_choice="VN", cc="VN", tz=
             if success < limit:
                 dsec = random.randint(INTERACT_MIN, INTERACT_MAX)
                 _push_log(tk_idx, f"[bold green]Page #{success}[/] [white]{res['name']}[/] [dim](ID {res['id']})[/]{cur_pages_str} [bold yellow]→ Nghỉ {dsec}s[/]")
-                start_d = time.time()
-                while time.time() - start_d < dsec:
-                    if _stop_flag: break
-                    elapsed_d = time.time() - start_d
-                    _dash_update(tk_idx, status=f"Nghỉ {int(dsec - elapsed_d)}s",
-                                 bar=(elapsed_d, dsec, "delay"))
-                    time.sleep(0.5)
+                if _wait_with_dash(tk_idx, dsec, "Nghỉ"):
+                    break
             else:
-                _push_log(tk_idx, f"[bold green]Page #{success}[/] [white]{res['name']}[/] [dim](ID {res['id']})[/]{cur_pages_str}")
-        else:
-            if die:
-                fail += 1
-                fail_streak += 1
-                _dash_bump_fail(1)
-                status = "die"
-                reason = "Token die"
-                _dash_update(tk_idx, status="Token die", fail=fail,
-                             reason=reason, done=True, flag="die")
-                _push_log(tk_idx, "[bold red]Token die - dừng luồng[/]")
+                if target_total is not None:
+                    done_str = f" [dim]→ Có {target_total}/{target_total} page[/] [bold cyan]→ Hoàn tất[/]"
+                else:
+                    done_str = " [bold cyan]→ Hoàn tất[/]"
+                _push_log(tk_idx, f"[bold green]Page #{success}[/] [white]{res['name']}[/] [dim](ID {res['id']})[/]{cur_pages_str}{done_str}")
+            continue
+
+        # ---- Thất bại lần 2 (retry cũng fail) ----
+        res_str = str(res)
+        fail += 1
+        fail_streak += 1
+        _dash_bump_fail(1)
+        _update_stat(tk_idx, token, current_proxy, "error",
+                     success, fail, res_str[:120], existing=existing)
+        _push_log(tk_idx, f"[bold red]Thử lại thất bại ({fail_streak}/{MAX_FAIL_STREAK}):[/] {res_str[:80]}")
+        _dash_update(tk_idx, last_was_fail=True)
+
+        if "Block Limit" in res_str or "Bị chặn" in res_str:
+            status = "blocked"; reason = res_str[:200]
+            _dash_update(tk_idx, status="BỊ BLOCK", fail=fail,
+                         reason=reason[:60], done=True, flag="block")
+            _update_stat(tk_idx, token, current_proxy, "blocked",
+                         success, fail, reason, existing)
+            _push_log(tk_idx, "[bold magenta]DỪNG LUỒNG - Token bị block[/]")
+            break
+        if is_rate_limit(res_str):
+            status = "rate_limit"; reason = res_str[:200]
+            _dash_update(tk_idx, status="RATE LIMIT", fail=fail,
+                         reason=reason[:60], done=True, flag="rate_limit")
+            _update_stat(tk_idx, token, current_proxy, "rate_limit",
+                         success, fail, reason, existing)
+            _push_log(tk_idx, "[bold magenta]DỪNG LUỒNG - Gần đây đã tạo quá nhiều trang[/]")
+            break
+        if fail_streak >= MAX_FAIL_STREAK:
+            status = "error"
+            reason = f"Thất bại {MAX_FAIL_STREAK} lần liên tiếp: {res_str[:150]}"
+            _dash_update(tk_idx, status=f"DỪNG - thất bại {MAX_FAIL_STREAK} lần",
+                         fail=fail, reason=reason[:60], done=True, flag="stop")
+            _update_stat(tk_idx, token, current_proxy, "error",
+                         success, fail, reason, existing)
+            _push_log(tk_idx, f"[bold red]DỪNG LUỒNG - Thất bại {MAX_FAIL_STREAK} lần liên tiếp[/]")
+            break
+
+        # Nghỉ delay bình thường, chờ đợt sau
+        _dash_update(tk_idx, status=f"Lỗi ({fail_streak}/{MAX_FAIL_STREAK})",
+                     fail=fail)
+        if success < limit:
+            dsec = random.randint(INTERACT_MIN, INTERACT_MAX)
+            _push_log(tk_idx, f"[bold yellow]Nghỉ {dsec}s trước khi thử lại đợt sau[/]")
+            if _wait_with_dash(tk_idx, dsec, "Nghỉ"):
                 break
 
-            fail += 1
-            fail_streak += 1
-            _dash_bump_fail(1)
-            _update_stat(tk_idx, token, token_proxy, "error",
-                         success, fail, str(res)[:120], existing=existing)
-            _push_log(tk_idx, f"[bold red]Tạo thất bại ({fail_streak}/{MAX_FAIL_STREAK}):[/] {str(res)[:90]}")
-
-            if "Block Limit" in str(res) or "Bị chặn" in str(res):
-                status = "blocked"; reason = str(res)[:200]
-                _dash_update(tk_idx, status="BỊ BLOCK", fail=fail,
-                             reason=reason[:60], done=True, flag="block")
-                _push_log(tk_idx, "[bold magenta]DỪNG LUỒNG - Token bị block[/]")
-                break
-            elif fail_streak >= MAX_FAIL_STREAK:
-                status = "error"
-                reason = f"Thất bại {MAX_FAIL_STREAK} lần liên tiếp: {str(res)[:150]}"
-                _dash_update(tk_idx, status=f"DỪNG - thất bại {MAX_FAIL_STREAK} lần",
-                             fail=fail, reason=reason[:60], done=True, flag="stop")
-                _push_log(tk_idx, f"[bold red]DỪNG LUỒNG - Thất bại {MAX_FAIL_STREAK} lần liên tiếp[/]")
-                break
-            else:
-                _dash_update(tk_idx, status=f"Lỗi ({fail_streak}/{MAX_FAIL_STREAK})",
-                             fail=fail)
-                _push_log(tk_idx, f"[yellow]Lỗi {fail_streak}/{MAX_FAIL_STREAK} - chờ rồi thử lại[/]")
-
-            if success < limit:
-                dsec = random.randint(INTERACT_MIN, INTERACT_MAX)
-                _push_log(tk_idx, f"[bold yellow]Nghỉ {dsec}s trước khi thử lại[/]")
-                start_d = time.time()
-                while time.time() - start_d < dsec:
-                    if _stop_flag: break
-                    elapsed_d = time.time() - start_d
-                    _dash_update(tk_idx, status=f"Nghỉ {int(dsec - elapsed_d)}s",
-                                 bar=(elapsed_d, dsec, "delay"))
-                    time.sleep(0.5)
-
+    # ==== Tổng kết ====
     if status == "unknown":
-        if success >= limit: status = "hoàn tất"
-        elif success > 0: status = "một phần"
+        if success >= limit: status = "Hoàn tất"
+        elif success > 0: status = "Một phần"
         else:
-            status = "không tạo được"
+            status = "Không tạo được"
             if not reason: reason = "Không tạo được page nào"
 
     flag = None
     if status == "die": flag = "die"
     elif status == "blocked": flag = "block"
+    elif status == "rate_limit": flag = "rate_limit"
     elif status == "error": flag = "stop"
 
     _dash_update(tk_idx, status=f"{status}", success=success, fail=fail,
                  reason=reason[:40] if reason else "", done=True, flag=flag)
-    _update_stat(tk_idx, token, token_proxy, status, success, fail, reason, existing)
+    _update_stat(tk_idx, token, current_proxy, status, success, fail, reason, existing)
     return success
 
 
-def print_final_report(total_success, elapsed, output_file):
+def print_final_report(total_success, elapsed):
     if not _HAS_RICH: return
     console.print()
     console.rule(f"[bold gold1]BÁO CÁO TỔNG KẾT TẠO PAGE PRO5 (ANDROID) - v{VERSION} by {AUTHOR}[/]")
     if not TOKEN_STATS:
         console.print("[bold red]Không có dữ liệu![/]"); return
 
-    alive, die_l, block_l, np_l, px_l, err_l, already_l = [], [], [], [], [], [], []
+    alive, die_l, block_l, np_l, px_l, err_l, already_l, rl_l = [], [], [], [], [], [], [], []
     for idx in sorted(TOKEN_STATS.keys()):
         st = TOKEN_STATS[idx]; s = st["status"]
-        if s in ("hoàn tất", "một phần"): alive.append((idx, st))
+        if s in ("Hoàn tất", "Một phần"): alive.append((idx, st))
         elif s == "already_enough": already_l.append((idx, st))
         elif s == "die": die_l.append((idx, st))
         elif s == "blocked": block_l.append((idx, st))
-        elif s == "không tạo được": np_l.append((idx, st))
+        elif s == "rate_limit": rl_l.append((idx, st))
+        elif s == "Không tạo được": np_l.append((idx, st))
         elif s == "proxy_die": px_l.append((idx, st))
         else: err_l.append((idx, st))
 
     ov = Table(show_header=False, box=box.ROUNDED, border_style="cyan", padding=(0, 1))
     ov.add_column("K", style="bold white"); ov.add_column("V", justify="right")
     ov.add_row("Hoạt động", f"[bold green]{len(alive)}[/]")
-    ov.add_row("DIE / BLOCK / LỖI", f"[bold red]{len(die_l) + len(block_l) + len(err_l)}[/]")
+    ov.add_row("DIE / BLOCK / RATE LIMIT / LỖI", f"[bold red]{len(die_l) + len(block_l) + len(rl_l) + len(err_l)}[/]")
     ov.add_row("Không tạo được page", f"[yellow]{len(np_l)}[/]")
     ov.add_row("Proxy die", f"[bold red]{len(px_l)}[/]")
     ov.add_row("Đã có page sẵn", f"[bold cyan]{len(already_l)}[/]")
     ov.add_row("TỔNG PAGE", f"[bold gold1]{total_success}[/]")
     ov.add_row("Thời gian", f"[bold magenta]{int(elapsed)}s[/]")
-    ov.add_row("File", f"[white]{output_file}[/]")
     ov.add_row("Tác giả", f"[bold gold1]{AUTHOR}[/]")
     ov.add_row("Phiên bản", f"[bold gold1]v{VERSION}[/]")
     console.print(Panel(ov, title="[bold gold1]TỔNG QUAN[/]",
@@ -1677,22 +1839,41 @@ def print_final_report(total_success, elapsed, output_file):
                   header_style="bold green", padding=(0, 1))
         t.add_column("STT", justify="center", width=5)
         t.add_column("Token", style="dim white")
-        t.add_column("Page", justify="right", style="bold green")
+        t.add_column("Page reg được", justify="right", style="bold green")
+        t.add_column("Tổng Page hiện có", justify="right", style="bold cyan")
         for idx, st in alive:
             tok = st['token'][:32] + "..." if len(st['token']) > 32 else st['token']
-            t.add_row(f"[bold]{idx}[/]", tok, str(st['success']))
+            existing = st.get('existing') or 0
+            total_now = existing + st['success']
+            t.add_row(f"[bold]{idx}[/]", tok,
+                      str(st['success']), str(total_now))
         console.print(Panel(t, title=f"[bold green]HOẠT ĐỘNG ({len(alive)})[/]",
                             border_style="green", box=box.ROUNDED))
 
+    if already_l:
+        t = Table(show_header=True, box=box.ROUNDED, border_style="cyan",
+                  header_style="bold cyan", padding=(0, 1))
+        t.add_column("STT", justify="center", width=5)
+        t.add_column("Token", style="dim white")
+        t.add_column("Page reg được", justify="right", style="bold green")
+        t.add_column("Tổng Page hiện có", justify="right", style="bold cyan")
+        for idx, st in already_l:
+            tok = st['token'][:32] + "..." if len(st['token']) > 32 else st['token']
+            existing = st.get('existing') or 0
+            t.add_row(f"[bold]{idx}[/]", tok, "0", str(existing))
+        console.print(Panel(t, title=f"[bold cyan]ĐÃ CÓ PAGE SẴN ({len(already_l)})[/]",
+                            border_style="cyan", box=box.ROUNDED))
+
     grp("DIE", die_l, "red")
     grp("BỊ BLOCK", block_l, "magenta")
+    grp("RATE LIMIT (tạo quá nhiều trang)", rl_l, "magenta")
     grp("PROXY DIE", px_l, "red")
     grp("KHÔNG TẠO ĐƯỢC", np_l, "yellow")
     grp("LỖI KHÁC (đã dừng luồng)", err_l, "red")
     console.print()
 
 
-async def run_farm(accounts, limit, output_file, country_choice, cc, tz):
+async def run_farm(accounts, limit, country_choice, cc, tz, proxy_pool=None):
     global _stop_flag
     _stop_flag = False
 
@@ -1702,10 +1883,6 @@ async def run_farm(accounts, limit, output_file, country_choice, cc, tz):
     dashboard_stats["total_fail"] = 0
     dashboard_lines.clear()
     log_buffer.clear()
-
-    # Nạp UID sẵn vào dashboard trước khi chạy
-    for i, acc in enumerate(accounts, start=1):
-        _dash_update(i, uid=acc.get("uid", ""))
 
     ui_task = asyncio.create_task(ui_render_loop())
     await asyncio.sleep(2.0)
@@ -1719,7 +1896,7 @@ async def run_farm(accounts, limit, output_file, country_choice, cc, tz):
             with ThreadPoolExecutor(max_workers=MAX_THREADS) as ex:
                 futs = []
                 for idx, acc in enumerate(accounts, start=1):
-                    f = ex.submit(run_token, idx, acc, limit, output_file, country_choice, cc, tz)
+                    f = ex.submit(run_token, idx, acc, limit, country_choice, cc, tz, proxy_pool)
                     futs.append(f)
                 for f in as_completed(futs):
                     try: results.append(f.result())
@@ -1739,6 +1916,64 @@ async def run_farm(accounts, limit, output_file, country_choice, cc, tz):
     return total_success
 
 
+async def input_tokens_with_uid_check():
+    """Nhập token, check UID ngay, token lỗi yêu cầu nhập lại.
+    Enter 2 lần liên tiếp để kết thúc."""
+    console.print()
+    print_info(
+        "Mỗi dòng một token Facebook (access token).\n"
+        "Có thể thêm proxy phía sau dạng [bold yellow]token|proxy[/] (tùy chọn).\n\n"
+        "Token sẽ được [bold green]kiểm tra UID ngay khi nhập[/].\n"
+        "Token lỗi sẽ yêu cầu nhập lại.\n\n"
+        "Nhập xong bấm [bold green]Enter 2 lần liên tiếp[/] để kết thúc.",
+        "NHẬP TOKEN")
+
+    valid_lines = []
+    empty_streak = 0
+    while True:
+        try:
+            line = console.input("[bold grey70]| [/]").rstrip()
+        except EOFError:
+            break
+
+        if not line.strip():
+            empty_streak += 1
+            if empty_streak >= 2:
+                break
+            continue
+
+        empty_streak = 0
+        acc = parse_token_line(line)
+        token = acc.get("token", "") or ""
+        inline_proxy = acc.get("proxy")
+
+        if not token or not _is_token(token):
+            console.print("[bold red]Token không hợp lệ (phải bắt đầu bằng EAAAA...). Nhập lại.[/]")
+            continue
+
+        console.print("[dim]→ Đang kiểm tra token...[/]")
+        uid, name, err = check_user(token, inline_proxy)
+
+        if uid:
+            console.print(
+                f"[bold green]✓ OK[/]  UID=[bold cyan]{uid}[/]  "
+                f"Tên=[white]{name or '?'}[/]"
+                + (f"  [dim]proxy: {inline_proxy}[/]" if inline_proxy else "")
+            )
+            valid_lines.append(line.strip())
+        else:
+            if err == "token_die":
+                console.print("[bold red]✗ Token die / hết hạn. Nhập lại token khác.[/]")
+            elif err and err.startswith("proxy_error"):
+                console.print(f"[bold red]✗ Lỗi proxy: {err}. Nhập lại.[/]")
+            elif err == "timeout":
+                console.print("[bold yellow]⚠ Timeout khi check token. Thử lại sau.[/]")
+            else:
+                console.print(f"[bold red]✗ Token lỗi ({err}). Nhập lại.[/]")
+
+    return valid_lines
+
+
 async def main():
     global TOTAL_TOKENS, MAX_THREADS, NAME_TYPE, INTERACT_MIN, INTERACT_MAX
 
@@ -1752,98 +1987,39 @@ async def main():
     print_banner()
     print_welcome()
 
-    # ===== 1) HỎI PROXY CHUNG TRƯỚC (để token nào cũng được check qua proxy) =====
-    print_section("PROXY CHUNG (TÙY CHỌN)", color="cyan")
+    # ================== NHẬP PROXY TỪ FILE TRƯỚC ==================
+    print_section("PROXY TỪ FILE", color="cyan")
     print_info(
-        "Nếu tất cả token dùng chung 1 proxy → nhập vào đây.\n"
-        "Nếu mỗi token 1 proxy riêng → để trống, ghi proxy sau dấu [bold yellow]|[/] ở từng dòng.\n\n"
+        "Nhập đường dẫn tới file proxy (mỗi dòng 1 proxy).\n"
         "Định dạng hỗ trợ:\n"
         "  [dim]http://user:pass@host:port[/]\n"
         "  [dim]host:port[/]\n"
-        "  [dim]user:pass@host:port[/]\n"
-        "  [dim]user:pass:host:port[/]  (hoặc host:port:user:pass)",
-        "HƯỚNG DẪN")
+        "  [dim]user:pass:host:port[/]\n"
+        "  [dim]host:port:user:pass[/]\n\n"
+        "Enter để bỏ qua (không dùng proxy).",
+        "FILE PROXY")
     console.print()
-    px_raw = ask_prompt("Proxy chung (Enter nếu không có):", "")
-    proxy_chung = format_proxy(px_raw) if px_raw else None
-    if proxy_chung:
-        console.print(f"[bold green]Đã nhận proxy chung:[/] [dim]{proxy_chung}[/]")
-    else:
-        console.print("[dim]Không dùng proxy chung.[/]")
+    proxy_file = ask_prompt("Đường dẫn file proxy (Enter bỏ qua):", "")
+    proxy_pool = []
+    if proxy_file:
+        if os.path.isfile(proxy_file):
+            proxy_pool = load_proxies_from_file(proxy_file)
+            if proxy_pool:
+                console.print(f"[bold green]✓ Đã nạp {len(proxy_pool)} proxy từ file[/]")
+            else:
+                console.print("[bold yellow]⚠ File rỗng hoặc không có proxy hợp lệ![/]")
+        else:
+            console.print(f"[bold red]✗ File không tồn tại: {proxy_file}[/]")
 
-    # ===== 2) NHẬP TOKEN + LOGIN CHECK UID NGAY =====
-    print_section("NHẬP DANH SÁCH TOKEN (TỰ ĐỘNG CHECK UID)", color="cyan")
-    print_info(
-        "Mỗi dòng một token Facebook.\n"
-        "Có thể thêm proxy riêng phía sau: [bold yellow]token|proxy[/]\n\n"
-        "Ví dụ:\n"
-        "  [dim]EAAAAUaZA8jlABO...[/]\n"
-        "  [dim]EAAAAUaZA8jlABO...|http://user:pass@host:port[/]\n\n"
-        "[bold yellow]Tool sẽ tự login & check UID từng token.[/]\n"
-        "[bold red]Token lỗi sẽ được yêu cầu nhập lại.[/]\n\n"
-        "Nhập xong bấm [bold green]Enter 2 lần[/] (lần 1 nhắc nhở, lần 2 kết thúc).",
-        "HƯỚNG DẪN")
-    console.print()
+    # ================== NHẬP TOKEN VỚI CHECK UID ==================
+    print_section("NHẬP DANH SÁCH TOKEN", color="cyan")
+    lines = await input_tokens_with_uid_check()
 
-    account_list = []
-    seen_tokens = set()
-    empty_streak = 0
-
-    while True:
-        try:
-            line = console.input(
-                f"[bold grey70]Token #{len(account_list)+1} › [/]"
-            ).rstrip()
-        except EOFError:
-            break
-
-        # Enter trống
-        if not line.strip():
-            empty_streak += 1
-            if empty_streak >= 2:
-                break
-            if account_list:
-                console.print("[dim]Bấm Enter lần nữa để kết thúc nhập...[/]")
-            continue
-        empty_streak = 0
-
-        # Parse token|proxy
-        acc = parse_token_line(line)
-        if not acc.get("token"):
-            console.print("[bold red]Token không hợp lệ, nhập lại![/]")
-            continue
-
-        token = acc["token"]
-        if token in seen_tokens:
-            console.print("[bold yellow]Token đã nhập trước đó, bỏ qua![/]")
-            continue
-
-        # Xác định proxy áp dụng
-        use_proxy = acc.get("proxy") or proxy_chung
-        acc["proxy"] = use_proxy
-
-        # Login check UID
-        console.print("[dim]  → Đang login & check UID...[/]")
-        uid, uname, err = check_user(token, use_proxy)
-
-        if not uid:
-            console.print(f"[bold red]  ✗ Token lỗi: {err} - Nhập lại![/]")
-            continue
-
-        console.print(f"[bold green]  ✓ OK[/] | UID: [bold cyan]{uid}[/] | Tên: [white]{uname or '?'}[/]")
-        acc["uid"] = uid
-        acc["name"] = uname or ""
-        account_list.append(acc)
-        seen_tokens.add(token)
-
-    if not account_list:
+    if not lines:
         console.print("[bold red]Không có token hợp lệ![/]")
         return
 
-    console.print()
-    console.print(f"[bold green]Tổng token hợp lệ: {len(account_list)}[/]")
-
-    # ===== CÁC BƯỚC CÒN LẠI =====
+    # ================== LOẠI TÊN ==================
     print_section("LOẠI TÊN", color="cyan")
     show_menu("CHỌN LOẠI TÊN", [("1", "Tên Việt Nam", ""), ("2", "Tên US", "")])
     console.print()
@@ -1851,6 +2027,7 @@ async def main():
     NAME_TYPE = "us" if nc == "2" else "vn"
     console.print(f"[bold green]{'US' if NAME_TYPE == 'us' else 'Việt Nam'}[/]")
 
+    # ================== QUỐC GIA ==================
     print_section("QUỐC GIA", color="cyan")
     cc_menu = [("1","VN","Việt Nam"),("2","US","Hoa Kỳ"),("3","GB","Anh"),
                ("4","DE","Đức"),("5","FR","Pháp"),("6","JP","Nhật"),("7","KR","Hàn Quốc"),
@@ -1880,6 +2057,7 @@ async def main():
     country_choice = cc_map.get(cc_ch, "AUTO") if cc_ch != "0" else "AUTO"
     console.print(f"[bold green]{country_choice}[/]")
 
+    # ================== SỐ PAGE / TOKEN ==================
     print_section("SỐ PAGE MỖI TOKEN", color="cyan")
     try:
         lp = int(ask_prompt("Số page tối đa/token", "15") or "15")
@@ -1887,9 +2065,10 @@ async def main():
     except: lp = 15
     console.print(f"[bold green]{lp} page/token[/]")
 
+    # ================== THỜI GIAN NGHỈ ==================
     print_section("THỜI GIAN NGHỈ GIỮA CÁC PAGE", color="cyan")
     show_menu("THỜI GIAN NGHỈ", [
-        ("1", "Ngắn",  "300-600s (5-10 phút)"),
+        ("1", "Ngắn",  "300-480s (5-8 phút)"),
         ("2", "Vừa",     "600-900s (10-15 phút)"),
         ("3", "Dài",     "900-1800s (15-30 phút)"),
         ("4", "Rất dài", "1800-3600s (30-60 phút)"),
@@ -1897,7 +2076,7 @@ async def main():
     ])
     console.print()
     dc = ask_menu("Lựa chọn", ["1","2","3","4","5"], "1")
-    if dc == "1": INTERACT_MIN, INTERACT_MAX = 300, 600
+    if dc == "1": INTERACT_MIN, INTERACT_MAX = 300, 480
     elif dc == "2": INTERACT_MIN, INTERACT_MAX = 600, 900
     elif dc == "3": INTERACT_MIN, INTERACT_MAX = 900, 1800
     elif dc == "4": INTERACT_MIN, INTERACT_MAX = 1800, 3600
@@ -1910,13 +2089,32 @@ async def main():
         except: INTERACT_MIN, INTERACT_MAX = 300, 600
     console.print(f"[bold green]{INTERACT_MIN}-{INTERACT_MAX}s[/]")
 
-    print_section("FILE KẾT QUẢ", color="cyan")
-    out = ask_prompt("File kết quả", "pro5_created.txt") or "pro5_created.txt"
-    console.print(f"[bold green]{out}[/]")
+    # ================== GÁN PROXY CHO TỪNG TOKEN ==================
+    account_list = []
+    for line in lines:
+        acc = parse_token_line(line)
+        if not acc.get("token"):
+            console.print(f"[bold yellow]Bỏ qua:[/] {line[:60]}")
+            continue
+        account_list.append(acc)
+
+    if not account_list:
+        console.print("[bold red]Không có token hợp lệ![/]")
+        return
+
+    if proxy_pool:
+        # Gán round-robin proxy cho các token chưa có proxy trong dòng
+        assigned = 0
+        for i, acc in enumerate(account_list):
+            if not acc.get("proxy"):
+                acc["proxy"] = proxy_pool[i % len(proxy_pool)]
+                assigned += 1
+        console.print(f"[bold cyan]Đã gán proxy từ file cho {assigned} token[/]")
 
     TOTAL_TOKENS = len(account_list)
     MAX_THREADS = TOTAL_TOKENS
 
+    # ================== XÁC NHẬN ==================
     console.print()
     s = Table(show_header=False, box=box.ROUNDED, border_style="gold1",
               padding=(0, 2), title=f"[bold gold1]XÁC NHẬN - v{VERSION} by {AUTHOR}[/]")
@@ -1925,29 +2123,40 @@ async def main():
     s.add_row("Số luồng", str(MAX_THREADS))
     s.add_row("Loại tên", "US" if NAME_TYPE == "us" else "Việt Nam")
     s.add_row("Quốc gia", country_choice)
+    s.add_row("Proxy pool", f"{len(proxy_pool)} proxy" if proxy_pool else "Không dùng")
     s.add_row("Page/token", str(lp))
     s.add_row("Nghỉ", f"{INTERACT_MIN}-{INTERACT_MAX}s")
-    s.add_row("File", out)
     s.add_row("Nền tảng", "Android")
     console.print(s)
     console.print()
 
     ok = ask_menu("Bắt đầu? (y/n)", ["y", "n", "Y", "N"], "y").lower()
     if ok != "y":
-        console.print("[bold yellow]Đã hủy.[/]"); return
+        console.print("[bold yellow]Đã hủy.[/]")
+        return
 
     start = time.time()
-    total = await run_farm(account_list, lp, out, country_choice,
+    total = await run_farm(account_list, lp, country_choice,
                            "VN" if country_choice == "AUTO" else country_choice,
-                           "Asia/Ho_Chi_Minh")
+                           "Asia/Ho_Chi_Minh",
+                           proxy_pool=proxy_pool)
     elapsed = time.time() - start
 
+    await asyncio.sleep(0.5)
+
+    try:
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.flush()
+    except Exception:
+        pass
     try:
         console.clear()
-    except: pass
+    except Exception:
+        pass
+
     await asyncio.sleep(0.3)
 
-    print_final_report(total, elapsed, out)
+    print_final_report(total, elapsed)
 
 
 if __name__ == "__main__":
