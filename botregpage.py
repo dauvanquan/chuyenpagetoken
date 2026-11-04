@@ -42,7 +42,7 @@ except ImportError:
 
 # ============================================
 BOT_TOKEN = "8801430268:AAEjRi8SwHoi4YYYaFDI10eFuWH802x4YIM"      # <-- Thay token bot của bạn
-ADMIN_IDS = [8483517282]                # <-- Thay ID Telegram admin
+ADMIN_IDS = [8483517282]               # <-- THAY ID CỦA BẠN VÀO ĐÂY
 ALLOWED_FILE = "allowed_users.json"
 # ============================================
 
@@ -802,7 +802,7 @@ def run_reg_account(chat_id, thread_id, raw_line, initial_proxy, proxies_list, p
 def run_batch(chat_id, user_id, mode, data):
     STOP_FLAGS[chat_id] = False
     reset_messages(chat_id)
-    results_dict = {} # Dict lưu kết quả: {thread_id: {"ok": int, "fail": int, "reason": str}}
+    results_dict = {}
     
     try:
         with ThreadPoolExecutor(max_workers=data.get("max_threads", 1)) as ex:
@@ -824,7 +824,7 @@ def run_batch(chat_id, user_id, mode, data):
                     if STOP_FLAGS.get(chat_id): break
                     ex.submit(run_delete_account, chat_id, index + 1, cred, data["delay"], results_dict)
                     
-        # --- XỬ LÝ TỔNG KẾT BÁO CÁO (Chỉ dành cho Transfer/Delete) ---
+        # --- XỬ LÝ TỔNG KẾT BÁO CÁO ---
         if mode in ("transfer", "delete") and results_dict:
             total_ok = sum(r.get("ok", 0) for r in results_dict.values())
             total_fail = sum(r.get("fail", 0) for r in results_dict.values())
@@ -839,7 +839,6 @@ def run_batch(chat_id, user_id, mode, data):
             error_lines = []
             for tid in sorted(results_dict.keys()):
                 r = results_dict[tid]
-                # Chỉ hiển thị luồng có lỗi
                 if r.get("fail", 0) > 0 or r.get("status") == "fail":
                     uid_str = data["accounts"][tid-1].get("uid", "Unknown") if tid-1 < len(data["accounts"]) else "Unknown"
                     reason = r.get("reason", "Lỗi không xác định")
@@ -1012,10 +1011,15 @@ def handle_callback(call):
 @bot.message_handler(content_types=['text'])
 def handle_text(msg):
     chat_id, user_id = msg.chat.id, msg.from_user.id
+    text = msg.text.strip()
+
+    # Bỏ qua nếu là lệnh (bắt đầu bằng /) để tránh chạy nhầm vào đây
+    if text.startswith('/'):
+        return
+
     if not is_allowed(user_id):
         no_permission_reply(chat_id, user_id); return
 
-    text = msg.text.strip()
     st = user_data.get(chat_id)
     if not st:
         bot.send_message(chat_id, "👉 Bấm /start để mở Menu.", reply_markup=types.ReplyKeyboardRemove()); return
@@ -1151,7 +1155,8 @@ def start_running(chat_id, user_id, mode, data):
 # ==================== ADMIN COMMANDS ====================
 @bot.message_handler(commands=['quanli'])
 def cmd_quanli(msg):
-    if not is_admin(msg.from_user.id): bot.reply_to(msg, "❌ Chỉ admin."); return
+    if not is_admin(msg.from_user.id): 
+        bot.reply_to(msg, "❌ Bạn không phải Admin."); return
     bot.send_message(msg.chat.id, f"⚙️ *Quản trị*\nUser duyệt: *{len(ALLOWED_USERS)}*\nAdmin: *{len(ADMIN_IDS)}*", reply_markup=admin_panel_menu(), parse_mode="Markdown")
 
 @bot.message_handler(commands=['myid'])
@@ -1162,7 +1167,9 @@ def cmd_myid(msg):
 
 @bot.message_handler(commands=['add'])
 def cmd_add(msg):
-    if not is_admin(msg.from_user.id): return
+    if not is_admin(msg.from_user.id): 
+        bot.reply_to(msg, "❌ Bạn không phải Admin. Hãy kiểm tra lại ADMIN_IDS trong code.")
+        return
     parts = msg.text.split()[1:]
     if not parts: bot.reply_to(msg, "Cú pháp: `/add <id> [1h|1d|1m]`", parse_mode="Markdown"); return
     expire_ts, ids_args = None, parts
@@ -1183,7 +1190,8 @@ def cmd_add(msg):
 
 @bot.message_handler(commands=['remove'])
 def cmd_remove(msg):
-    if not is_admin(msg.from_user.id): return
+    if not is_admin(msg.from_user.id): 
+        bot.reply_to(msg, "❌ Bạn không phải Admin."); return
     parts = msg.text.split()[1:]
     removed = 0
     for p in parts:
@@ -1195,7 +1203,8 @@ def cmd_remove(msg):
 
 @bot.message_handler(commands=['list'])
 def cmd_list(msg):
-    if not is_admin(msg.from_user.id): return
+    if not is_admin(msg.from_user.id): 
+        bot.reply_to(msg, "❌ Bạn không phải Admin."); return
     txt = "\n".join([f"• `{uid}` — {format_remaining(exp)}" for uid, exp in sorted(ALLOWED_USERS.items())])
     bot.reply_to(msg, f"📋 *User*:\n{txt or 'Trống'}", parse_mode="Markdown")
 
