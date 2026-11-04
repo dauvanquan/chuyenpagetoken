@@ -620,7 +620,6 @@ def run_transfer_account(chat_id, thread_id, acc, id_nhan, token_nhan, auto_acce
         else:
             update_status(chat_id, thread_id, last_msg)
             
-    # Lưu kết quả tổng kết luồng
     reason_str = ", ".join(error_reasons) if error_reasons else ""
     results_dict[thread_id] = {"status": "done", "reason": reason_str, "ok": ok_count, "fail": fail_count}
 
@@ -824,7 +823,6 @@ def run_batch(chat_id, user_id, mode, data):
                     if STOP_FLAGS.get(chat_id): break
                     ex.submit(run_delete_account, chat_id, index + 1, cred, data["delay"], results_dict)
                     
-        # --- XỬ LÝ TỔNG KẾT BÁO CÁO ---
         if mode in ("transfer", "delete") and results_dict:
             total_ok = sum(r.get("ok", 0) for r in results_dict.values())
             total_fail = sum(r.get("fail", 0) for r in results_dict.values())
@@ -917,34 +915,60 @@ def cmd_start(msg):
     )
     bot.send_message(msg.chat.id, f"🤖 *Chào {name}!*{exp_text}\n\nChọn thao tác 👇", reply_markup=markup, parse_mode="Markdown")
 
-@bot.message_handler(commands=['reg', 'chuyenpage', 'goadmin'])
-def cmd_shortcuts(msg):
-    if not is_allowed(msg.from_user.id):
-        no_permission_reply(msg.chat.id, msg.from_user.id); return
-    chat_id = msg.chat.id
-    if msg.text.startswith('/reg'):
-        user_data[chat_id] = {"mode": "reg", "step": "proxies", "data": {"proxies": []}}
-        bot.send_message(chat_id, "📡 *Bước 1/8:* Nhập danh sách Proxy (text/file) hoặc Bỏ qua:", reply_markup=step_menu(skip=True), parse_mode="Markdown")
-    elif msg.text.startswith('/chuyenpage'):
-        user_data[chat_id] = {"mode": "transfer", "step": "tr_acc", "data": {}}
-        bot.send_message(chat_id, "📤 *Chuyển Page*\nNhập danh sách Acc nguồn (uid|pass|cookie|token...)\n💬 Gửi *text* hoặc *file .txt*:", reply_markup=step_menu(), parse_mode="Markdown")
-    elif msg.text.startswith('/goadmin'):
-        user_data[chat_id] = {"mode": "delete", "step": "del_acc", "data": {}}
-        bot.send_message(chat_id, "🗑 *Gỡ Admin Page*\nNhập danh sách Acc cần gỡ (uid|pass|cookie|token...)\n💬 Gửi *text* hoặc *file .txt*:", reply_markup=step_menu(), parse_mode="Markdown")
+@bot.message_handler(commands=['quanli'])
+def cmd_quanli(msg):
+    if not is_admin(msg.from_user.id): 
+        bot.reply_to(msg, "❌ Bạn không phải Admin."); return
+    bot.send_message(msg.chat.id, f"⚙️ *Quản trị*\nUser duyệt: *{len(ALLOWED_USERS)}*\nAdmin: *{len(ADMIN_IDS)}*", reply_markup=admin_panel_menu(), parse_mode="Markdown")
 
-@bot.message_handler(commands=['stop'])
-def cmd_stop(msg):
-    STOP_FLAGS[msg.chat.id] = True
-    user_data.pop(msg.chat.id, None)  
-    bot.send_message(msg.chat.id, "🛑 **Đã gửi lệnh DỪNG KHẨN CẤP!**", reply_markup=types.ReplyKeyboardRemove())
+@bot.message_handler(commands=['myid'])
+def cmd_myid(msg):
+    uid = msg.from_user.id
+    status = "👑 Admin" if is_admin(uid) else (f"✅ Đã duyệt — {format_remaining(ALLOWED_USERS[uid])}" if is_allowed(uid) else "❌ Chưa có quyền")
+    bot.reply_to(msg, f"📝 ID: `{uid}`\n\n{status}", parse_mode="Markdown")
 
-@bot.message_handler(commands=['status'])
-def cmd_status(msg):
-    chat_id = msg.chat.id
-    if not is_allowed(msg.from_user.id): return
-    rb = running_batches.get(chat_id)
-    text = f"📊 Trạng thái: *{rb['status']}*\n⏱ Thời gian: `{int(time.time() - rb['start'])}s`" if rb else "ℹ️ Không có batch nào."
-    bot.send_message(chat_id, text, parse_mode="Markdown")
+@bot.message_handler(commands=['add'])
+def cmd_add(msg):
+    if not is_admin(msg.from_user.id): 
+        bot.reply_to(msg, "❌ Bạn không phải Admin.")
+        return
+    parts = msg.text.split()[1:]
+    if not parts: bot.reply_to(msg, "Cú pháp: `/add <id> [1h|1d|1m]`", parse_mode="Markdown"); return
+    expire_ts, ids_args = None, parts
+    parsed = parse_duration(parts[-1])
+    if parsed is not None: expire_ts, ids_args = parsed, parts[:-1]
+    added, updated = [], []
+    for p in ids_args:
+        try: uid = int(p)
+        except: continue
+        if uid in ALLOWED_USERS: ALLOWED_USERS[uid] = expire_ts; updated.append(uid)
+        else: ALLOWED_USERS[uid] = expire_ts; added.append(uid)
+    if added or updated:
+        save_allowed_users()
+        for uid in added + updated:
+            try: bot.send_message(uid, f"✅ Đã được duyệt. Hạn: {'∞' if not expire_ts else format_datetime(expire_ts)}")
+            except: pass
+    bot.reply_to(msg, f"✅ Thêm: {len(added)} | Gia hạn: {len(updated)}")
+
+@bot.message_handler(commands=['remove'])
+def cmd_remove(msg):
+    if not is_admin(msg.from_user.id): 
+        bot.reply_to(msg, "❌ Bạn không phải Admin."); return
+    parts = msg.text.split()[1:]
+    removed = 0
+    for p in parts:
+        try: uid = int(p)
+        except: continue
+        if uid in ALLOWED_USERS: del ALLOWED_USERS[uid]; removed += 1
+    if removed: save_allowed_users()
+    bot.reply_to(msg, f"🗑 Đã xóa {removed} user.")
+
+@bot.message_handler(commands=['list'])
+def cmd_list(msg):
+    if not is_admin(msg.from_user.id): 
+        bot.reply_to(msg, "❌ Bạn không phải Admin."); return
+    txt = "\n".join([f"• `{uid}` — {format_remaining(exp)}" for uid, exp in sorted(ALLOWED_USERS.items())])
+    bot.reply_to(msg, f"📋 *User*:\n{txt or 'Trống'}", parse_mode="Markdown")
 
 # ==================== CALLBACKS ====================
 @bot.callback_query_handler(func=lambda c: True)
@@ -1007,15 +1031,41 @@ def handle_callback(call):
             bot.edit_message_text("🔑 Nhập UID của acc nhận Page (chỉ gửi mời):", chat_id, call.message.message_id)
         bot.answer_callback_query(call.id)
 
-# ==================== TEXT HANDLERS ====================
-@bot.message_handler(content_types=['text'])
+# ==================== TEXT HANDLERS (LUỒNG CHÍNH) ====================
+@bot.message_handler(commands=['reg', 'chuyenpage', 'goadmin'])
+def cmd_shortcuts(msg):
+    if not is_allowed(msg.from_user.id):
+        no_permission_reply(msg.chat.id, msg.from_user.id); return
+    chat_id = msg.chat.id
+    if msg.text.startswith('/reg'):
+        user_data[chat_id] = {"mode": "reg", "step": "proxies", "data": {"proxies": []}}
+        bot.send_message(chat_id, "📡 *Bước 1/8:* Nhập danh sách Proxy (text/file) hoặc Bỏ qua:", reply_markup=step_menu(skip=True), parse_mode="Markdown")
+    elif msg.text.startswith('/chuyenpage'):
+        user_data[chat_id] = {"mode": "transfer", "step": "tr_acc", "data": {}}
+        bot.send_message(chat_id, "📤 *Chuyển Page*\nNhập danh sách Acc nguồn (uid|pass|cookie|token...)\n💬 Gửi *text* hoặc *file .txt*:", reply_markup=step_menu(), parse_mode="Markdown")
+    elif msg.text.startswith('/goadmin'):
+        user_data[chat_id] = {"mode": "delete", "step": "del_acc", "data": {}}
+        bot.send_message(chat_id, "🗑 *Gỡ Admin Page*\nNhập danh sách Acc cần gỡ (uid|pass|cookie|token...)\n💬 Gửi *text* hoặc *file .txt*:", reply_markup=step_menu(), parse_mode="Markdown")
+
+@bot.message_handler(commands=['stop'])
+def cmd_stop(msg):
+    STOP_FLAGS[msg.chat.id] = True
+    user_data.pop(msg.chat.id, None)  
+    bot.send_message(msg.chat.id, "🛑 **Đã gửi lệnh DỪNG KHẨN CẤP!**", reply_markup=types.ReplyKeyboardRemove())
+
+@bot.message_handler(commands=['status'])
+def cmd_status(msg):
+    chat_id = msg.chat.id
+    if not is_allowed(msg.from_user.id): return
+    rb = running_batches.get(chat_id)
+    text = f"📊 Trạng thái: *{rb['status']}*\n⏱ Thời gian: `{int(time.time() - rb['start'])}s`" if rb else "ℹ️ Không có batch nào."
+    bot.send_message(chat_id, text, parse_mode="Markdown")
+
+# Hàm này CHỈ bắt các văn bản thường (không bắt lệnh /...)
+@bot.message_handler(func=lambda msg: msg.text and not msg.text.startswith('/'))
 def handle_text(msg):
     chat_id, user_id = msg.chat.id, msg.from_user.id
     text = msg.text.strip()
-
-    # Bỏ qua nếu là lệnh (bắt đầu bằng /) để tránh chạy nhầm vào đây
-    if text.startswith('/'):
-        return
 
     if not is_allowed(user_id):
         no_permission_reply(chat_id, user_id); return
@@ -1152,75 +1202,19 @@ def start_running(chat_id, user_id, mode, data):
     bot.send_message(chat_id, msg, parse_mode="Markdown")
     Thread(target=run_batch, args=(chat_id, user_id, mode, data), daemon=True).start()
 
-# ==================== ADMIN COMMANDS ====================
-@bot.message_handler(commands=['quanli'])
-def cmd_quanli(msg):
-    if not is_admin(msg.from_user.id): 
-        bot.reply_to(msg, "❌ Bạn không phải Admin."); return
-    bot.send_message(msg.chat.id, f"⚙️ *Quản trị*\nUser duyệt: *{len(ALLOWED_USERS)}*\nAdmin: *{len(ADMIN_IDS)}*", reply_markup=admin_panel_menu(), parse_mode="Markdown")
-
-@bot.message_handler(commands=['myid'])
-def cmd_myid(msg):
-    uid = msg.from_user.id
-    status = "👑 Admin" if is_admin(uid) else (f"✅ Đã duyệt — {format_remaining(ALLOWED_USERS[uid])}" if is_allowed(uid) else "❌ Chưa có quyền")
-    bot.reply_to(msg, f"📝 ID: `{uid}`\n\n{status}", parse_mode="Markdown")
-
-@bot.message_handler(commands=['add'])
-def cmd_add(msg):
-    if not is_admin(msg.from_user.id): 
-        bot.reply_to(msg, "❌ Bạn không phải Admin. Hãy kiểm tra lại ADMIN_IDS trong code.")
-        return
-    parts = msg.text.split()[1:]
-    if not parts: bot.reply_to(msg, "Cú pháp: `/add <id> [1h|1d|1m]`", parse_mode="Markdown"); return
-    expire_ts, ids_args = None, parts
-    parsed = parse_duration(parts[-1])
-    if parsed is not None: expire_ts, ids_args = parsed, parts[:-1]
-    added, updated = [], []
-    for p in ids_args:
-        try: uid = int(p)
-        except: continue
-        if uid in ALLOWED_USERS: ALLOWED_USERS[uid] = expire_ts; updated.append(uid)
-        else: ALLOWED_USERS[uid] = expire_ts; added.append(uid)
-    if added or updated:
-        save_allowed_users()
-        for uid in added + updated:
-            try: bot.send_message(uid, f"✅ Đã được duyệt. Hạn: {'∞' if not expire_ts else format_datetime(expire_ts)}")
-            except: pass
-    bot.reply_to(msg, f"✅ Thêm: {len(added)} | Gia hạn: {len(updated)}")
-
-@bot.message_handler(commands=['remove'])
-def cmd_remove(msg):
-    if not is_admin(msg.from_user.id): 
-        bot.reply_to(msg, "❌ Bạn không phải Admin."); return
-    parts = msg.text.split()[1:]
-    removed = 0
-    for p in parts:
-        try: uid = int(p)
-        except: continue
-        if uid in ALLOWED_USERS: del ALLOWED_USERS[uid]; removed += 1
-    if removed: save_allowed_users()
-    bot.reply_to(msg, f"🗑 Đã xóa {removed} user.")
-
-@bot.message_handler(commands=['list'])
-def cmd_list(msg):
-    if not is_admin(msg.from_user.id): 
-        bot.reply_to(msg, "❌ Bạn không phải Admin."); return
-    txt = "\n".join([f"• `{uid}` — {format_remaining(exp)}" for uid, exp in sorted(ALLOWED_USERS.items())])
-    bot.reply_to(msg, f"📋 *User*:\n{txt or 'Trống'}", parse_mode="Markdown")
-
 # ==================== MAIN ====================
 if __name__ == "__main__":
     print("[BOT] Đang khởi động...")
     try:
         bot.set_my_commands([
             types.BotCommand("start", "Mở Menu chính"),
+            types.BotCommand("quanli", "Quản trị viên (Admin)"),
             types.BotCommand("reg", "Reg Page Pro5"),
             types.BotCommand("chuyenpage", "Chuyển quyền quản trị Page"),
             types.BotCommand("goadmin", "Gỡ Admin/Xoá Page"),
             types.BotCommand("stop", "Dừng khẩn cấp"),
             types.BotCommand("status", "Xem trạng thái"),
-            types.BotCommand("myid", "Lấy ID Telegram"),
-            types.BotCommand("quanli", "Quản trị viên")
+            types.BotCommand("myid", "Lấy ID Telegram")
         ])
     except: pass
     bot.infinity_polling(timeout=30, long_polling_timeout=30)
