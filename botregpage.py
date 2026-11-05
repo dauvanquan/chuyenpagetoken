@@ -18,6 +18,9 @@ import io
 import struct
 import email.utils
 import string
+import gzip
+import hashlib
+import urllib.parse
 
 # ==================== IMPORT BẢO MẬT ====================
 try:
@@ -182,6 +185,14 @@ def extract_cookie(line):
             if 'c_user=' in p and 'xs=' in p: return p.strip()
     m = re.search(r'(c_user=\d+;[^|\n]+)', line)
     return m.group(1).strip() if m else line.strip()
+
+def extract_tokens_from_input(text: str) -> list:
+    tokens = re.findall(r'EAAAA[a-zA-Z0-9]+', text)
+    unique_tokens = []
+    for t in tokens:
+        if t not in unique_tokens:
+            unique_tokens.append(t)
+    return unique_tokens
 
 # --- Parse Accounts (Dành cho Transfer/Delete) ---
 def _is_token(s): return bool(s and re.match(r'^EAAAA[A-Za-z0-9_\-]{20,}$', s.strip()))
@@ -674,7 +685,7 @@ def run_delete_account(chat_id, thread_id, acc, delay, results_dict):
     reason_str = ", ".join(error_reasons) if error_reasons else ""
     results_dict[thread_id] = {"status": "done", "reason": reason_str, "ok": ok_count, "fail": fail_count}
 
-# ==================== REG PAGE CORE ====================
+# ==================== REG PAGE CORE (COOKIE & TOKEN) ====================
 class reg_pro5:
     def __init__(self, cookies, proxy=None):
         self.cookies = cookies
@@ -727,10 +738,169 @@ class reg_pro5:
             return json.loads(raw)
         except Exception as e: return {"error": str(e)}
 
-def run_reg_account(chat_id, thread_id, raw_line, initial_proxy, proxies_list, proxy_index_ref, sl_pro5, dl, name_type, avatar_mode, custom_link):
+# --- TOKEN BLOKS API ---
+DOC_ID_BLOKS_APP = "1053734614689698944078444353"
+DOC_ID_BLOKS_ACTION = "119940804212339007317684952579"
+BLOKS_VERSIONING_ID = "48b5726e06ebecc48febcc8a7151c1b44ef92499aea2606b6aa1ff29d7e31534"
+STYLES_ID = "0c28c2fb31d4e397db6494e82e716e1b"
+QPL_MARKER_ID = 36707139
+
+DEFAULT_USER_AGENT = "[FBAN/FB4A;FBAV/577.0.0.50.72;FBBV/1057532741;FBDM/{density=1.5,width=540,height=960};FBLC/en_US;FBRV/0;FBCR/AT&amp-T;FBMF/samsung;FBBD/samsung;FBPN/com.facebook.katana;FBDV/SM-N960N;FBSV/9;FBOP/1;FBCA/x86_64:arm64-v8a;]"
+DEFAULT_DEVICE_ID = "7b969abc-3e04-46ee-97fe-55cbf202a456"
+DEFAULT_MACHINE_ID = "gp_oavfXGbzjFgC1CHQWMsou"
+DEFAULT_DEVICE_GROUP = "3264"
+DEFAULT_SIM_HNI = "310410"
+DEFAULT_NET_HNI = "310410"
+DEFAULT_ZERO_EH = "2,,AXgSo6c4432ZNB__UH1hDJnlvgRqKbMZ4NXVdQcLMfsjeq_23RgU8CvvmLOXmm75lC4"
+DEFAULT_USDID = "0a735196-403e-4962-b9c4-0826da02bfa0.1793633770.MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAERoE-itYXMcsOCpPxcPK2puVrPx13evvGsdJYvtfbORSRV4woIcEiBRcH9I-Hygm_4d2-jM27l6FewJ8rgXVGIQ.MEQCIBc_9pSfqPEi-JRRhpc81_wsial1nTF_n5q2DDk1PkgEAiAHIyAPOvH5dCzghRT3t5gN_O_nNKpffx84yjFMK9zTBQ"
+DEFAULT_APPNET_SID = "10001e8fa76b42d79b7961135af37b61"
+DEFAULT_APPNET_NID = "55531c0139f2456ad95b6f09961423a6,Wifi"
+DEFAULT_CONN_UUID_GRAPH = "E3ag91KpdC1f+QIZVRpdgQ=="
+
+NT_CONTEXT_TEMPLATE = {
+    "using_white_navbar": True, "styles_id": STYLES_ID, "pixel_ratio": 1.5, "is_push_on": True, "is_flipper_enabled": False,
+    "android_device_performance_class": None, "debug_tooling_metadata_token": None, "gpu_memory_mb": None,
+    "theme_params": [{"value": [], "design_system_name": "FDS"}], "bloks_version": BLOKS_VERSIONING_ID, "android_os_api_level": 28,
+}
+
+def build_bloks_app_headers(token, fname, current_ep, ua=DEFAULT_USER_AGENT, did=DEFAULT_DEVICE_ID, mid=DEFAULT_MACHINE_ID):
+    qpl = json.dumps({"schema_version": "v3","inprogress_qpls": [{"marker_id": 25952257,"annotations": {"current_endpoint": current_ep}}],"snapshot_attributes": {}}, separators=(",", ":"))
+    tags = json.dumps({"network_tags": {"product": "350685531728","request_category": "graphql","purpose": "fetch","retry_attempt": "0"},"application_tags": "graphservice"}, separators=(",", ":"))
+    return {"x-fb-rmd": "state=URL_ELIGIBLE","user-agent": ua,"x-zero-f-device-id": did,"x-graphql-request-purpose": "fetch","x-fb-friendly-name": fname,"x-meta-tasos-congestion-config": "v6_1","x-graphql-client-library": "graphservice","x-fb-tasos-experimental": "1","x-zero-eh": DEFAULT_ZERO_EH,"x-fb-device-group": DEFAULT_DEVICE_GROUP,"x-fb-integrity-machine-id": mid,"x-fb-net-hni": DEFAULT_NET_HNI,"x-fb-sim-hni": DEFAULT_SIM_HNI,"content-type": "application/x-www-form-urlencoded","authorization": f"OAuth {token}","x-fb-connection-type": "WIFI","x-meta-zca": "empty_token","app-scope-id-header": did,"x-meta-usdid": DEFAULT_USDID,"x-fb-network-properties": "Wifi;Validated;","content-encoding": "gzip","priority": "u=0","x-fb-qpl-active-flows-json": qpl,"x-meta-enable-tasos-ss-bwe": "1","x-fb-request-analytics-tags": tags,"x-fb-tasos-td-v2-config": "prod_android","x-meta-tasos-dcc-constraint": "active=0;dcc=0;level=none;mode=0","x-tigon-is-retry": "False","x-fb-appnetsession-sid": DEFAULT_APPNET_SID,"x-fb-appnetsession-nid": DEFAULT_APPNET_NID,"accept-encoding": "gzip, deflate","x-fb-http-engine": "Tigon/Liger","x-fb-client-ip": "True","x-fb-server-cluster": "True","x-fb-conn-uuid-client": DEFAULT_CONN_UUID_GRAPH}
+
+def build_bloks_action_headers(token, fname, nav_chain, current_ep="com.bloks.www.additional.profile.plus.creation:com.bloks.www.additional.profile.plus.creation", ua=DEFAULT_USER_AGENT, did=DEFAULT_DEVICE_ID, mid=DEFAULT_MACHINE_ID):
+    qpl = json.dumps({"schema_version": "v3","inprogress_qpls": [{"marker_id": 25952257,"annotations": {"current_endpoint": current_ep}}],"snapshot_attributes": {}}, separators=(",", ":"))
+    tags = json.dumps({"network_tags": {"product": "350685531728","request_category": "graphql","purpose": "fetch","retry_attempt": "0"},"application_tags": "graphservice"}, separators=(",", ":"))
+    return {"x-fb-rmd": "state=URL_ELIGIBLE","user-agent": ua,"x-zero-f-device-id": did,"x-graphql-client-library": "graphservice","x-graphql-request-purpose": "fetch","x-fb-friendly-name": fname,"x-fb-device-group": DEFAULT_DEVICE_GROUP,"x-fb-integrity-machine-id": mid,"x-zero-eh": DEFAULT_ZERO_EH,"x-meta-tasos-congestion-config": "v6_1","x-fb-net-hni": DEFAULT_NET_HNI,"x-fb-sim-hni": DEFAULT_SIM_HNI,"content-type": "application/x-www-form-urlencoded","x-fb-navigation-chain": nav_chain,"authorization": f"OAuth {token}","x-fb-connection-type": "WIFI","x-meta-zca": "empty_token","app-scope-id-header": did,"x-meta-usdid": DEFAULT_USDID,"x-fb-network-properties": "Wifi;Validated;","content-encoding": "gzip","priority": "u=0","x-fb-qpl-active-flows-json": qpl,"x-meta-enable-tasos-ss-bwe": "1","x-fb-tasos-experimental": "1","x-fb-request-analytics-tags": tags,"x-fb-tasos-td-v2-config": "prod_android","x-meta-tasos-dcc-constraint": "active=0;dcc=0;level=none;mode=0","x-tigon-is-retry": "False","x-fb-appnetsession-sid": DEFAULT_APPNET_SID,"x-fb-appnetsession-nid": DEFAULT_APPNET_NID,"accept-encoding": "gzip, deflate","x-fb-http-engine": "Tigon/Liger","x-fb-client-ip": "True","x-fb-server-cluster": "True","x-fb-conn-uuid-client": DEFAULT_CONN_UUID_GRAPH}
+
+def build_bloks_form_body_gzip(fname, doc_id, app_id, inner_params, tags):
+    level1 = json.dumps(inner_params, ensure_ascii=False, separators=(",", ":"))
+    level2 = json.dumps({"params": level1}, ensure_ascii=False, separators=(",", ":"))
+    vars_obj = {"params": {"params": level2, "bloks_versioning_id": BLOKS_VERSIONING_ID, "app_id": app_id},"scale": "1.5","use_native_entrypoint_for_stars_on_reels": True,"nt_context": NT_CONTEXT_TEMPLATE}
+    fields = [("method", "post"),("format", "json"),("server_timestamps", "true"),("locale", "en_US"),("purpose", "fetch"),("fb_api_req_friendly_name", fname),("fb_api_caller_class", "graphservice"),("client_doc_id", doc_id),("fb_api_client_context", '{"is_background":false}'),("variables", json.dumps(vars_obj, ensure_ascii=False, separators=(",", ":"))),("fb_api_analytics_tags", json.dumps(tags, separators=(",", ":"))),("client_trace_id", str(uuid.uuid4()))]
+    return gzip.compress(urllib.parse.urlencode(fields, quote_via=urllib.parse.quote_plus).encode("utf-8"))
+
+def parse_bloks_action_response(resp_json):
+    res = {"ok": True, "error": "", "is_rate_limit": False, "state_vars": {}, "action_script": "", "new_page_profile": None}
+    if "error" in resp_json and isinstance(resp_json["error"], dict): res["ok"] = False; res["error"] = resp_json["error"].get("message") or resp_json["error"].get("error_user_msg") or str(resp_json["error"]); return res
+    if "errors" in resp_json and isinstance(resp_json["errors"], list) and resp_json["errors"]: res["ok"] = False; res["error"] = resp_json["errors"][0].get("message") or str(resp_json["errors"][0]); return res
+    
+    root = resp_json.get("data", {}).get("fb_bloks_action", {})
+    bundle_str = root.get("root_action", {}).get("action", {}).get("action_bundle", {}).get("bloks_bundle_action", "")
+    if bundle_str:
+        try: script = json.loads(bundle_str).get("layout", {}).get("bloks_payload", {}).get("action", "")
+        except: script = bundle_str
+        res["action_script"] = script
+        for k, v in re.findall(r'\(dq8\s+"([^"]+)"\s+"([^"]*)"\)', script): res["state_vars"][k] = v.replace(r"\/", "/")
+        
+        toasts = re.findall(r'\(f2n\s+"([^"]+)"\)', script)
+        if toasts:
+            res["ok"] = False; res["error"] = toasts[0]
+            if "too many pages" in res["error"].lower() or "try again later" in res["error"].lower(): res["is_rate_limit"] = True
+            return res
+            
+        name_err = res["state_vars"].get("ADDITIONAL_PROFILE_PLUS_CREATION:name_error_msg", "").strip()
+        if name_err: res["ok"] = False; res["error"] = f"Tên lỗi: {name_err}"; return res
+        if '"create_error"' in script or '"profile_creation_error"' in script: res["ok"] = False; res["error"] = "FB từ chối tạo Page"; return res
+
+    gql_vars = root.get("gql_variables", []) or root.get("root_action", {}).get("action", {}).get("gql_variables", [])
+    if isinstance(gql_vars, list):
+        for item in gql_vars:
+            if isinstance(item, dict) and "profile_switcher_eligible_profile" in item:
+                elig = item["profile_switcher_eligible_profile"]
+                sess_info = elig.get("session_info", {}); prof_info = elig.get("profile", {})
+                cookies = sess_info.get("session_cookies", [])
+                cookie_pairs = []; cookie_dict = {}
+                for c_str in cookies:
+                    try:
+                        c_obj = json.loads(c_str) if isinstance(c_str, str) else c_str
+                        if c_obj.get("name") and c_obj.get("value") is not None:
+                            cookie_pairs.append(f"{c_obj['name']}={c_obj['value']}"); cookie_dict[c_obj["name"]] = c_obj["value"]
+                    except: pass
+                res["new_page_profile"] = {"page_id": prof_info.get("id", ""),"page_name": prof_info.get("name", ""),"access_token": sess_info.get("access_token", ""),"cookie_string": "; ".join(cookie_pairs)}
+    return res
+
+class PageCreationFlowToken:
+    def __init__(self, token, proxy=""):
+        self.token = token
+        self.session = requests.Session()
+        px = format_proxy(proxy)
+        if px: self.session.proxies = {"http": px, "https": px}
+        self.tracking_id = str(uuid.uuid4())
+        t_base = time.time()
+        self.nav_chain = [
+            f"com.bloks.www.additional.profile.plus.creation,com.bloks.www.additional.profile.plus.creation,,{t_base + 1.8:.3f},174467197,,,,{t_base + 1.8:.3f}",
+            f"com.bloks.www.unified.profile.creation,com.bloks.www.unified.profile.plus.creation,,{t_base + 0.1:.2f},219030505,,,,{t_base + 0.1:.2f}".replace("unified.profile.plus.creation", "unified.profile.creation"),
+            f"BookmarkComponentsFragment,bookmarks,tap_top_jewel_bar,{t_base - 6.5:.3f},120366463,281710865595635,,,{t_base - 0.9:.3f}",
+        ]
+
+    def _push_nav(self, rid=None):
+        now = time.time()
+        self.nav_chain.insert(0, f"com.bloks.www.additional.profile.plus.creation,com.bloks.www.additional.profile.plus.creation,,{now:.3f},{rid or random.randint(70000000, 230000000)},,,,{now:.3f}")
+
+    def _post_app(self, app_id, params, ep):
+        fname = f"FbBloksAppRootQuery-{app_id}"
+        headers = build_bloks_app_headers(self.token, fname, ep)
+        body = build_bloks_form_body_gzip(fname, DOC_ID_BLOKS_APP, app_id, params, ["surfaces.fb.GraphServiceEmitter", "GraphServices"])
+        return self.session.post("https://graph.facebook.com/graphql", headers=headers, data=body, timeout=30).json()
+
+    def _post_action(self, app_id, params):
+        fname = f"FbBloksActionRootQuery-{app_id}"
+        headers = build_bloks_action_headers(self.token, fname, ";".join(self.nav_chain))
+        body = build_bloks_form_body_gzip(fname, DOC_ID_BLOKS_ACTION, app_id, params, ["GraphServices"])
+        return parse_bloks_action_response(self.session.post("https://graph.facebook.com/graphql", headers=headers, data=body, timeout=30).json())
+
+    def create_page(self, name):
+        self._post_app("com.bloks.www.unified.profile.creation", {"server_params": {"design_variant": "promode_spotlight_neutral","source": "BOOKMARK_CREATE_ACTION","tracking_id": self.tracking_id}}, "BookmarkComponentsFragment:bookmarks")
+        self._post_app("com.bloks.www.additional.profile.plus.creation", {"server_params": {"referrer": "bookmark_create_action","creation_source": "android","use_updated_unified_creation_copy_for_name_screen": 1,"variant": 8,"screen": "name","unified_entrypoint_tracker_id": self.tracking_id,"show_secondary_button": 1,"unified_creation_source": "BOOKMARK_CREATE_ACTION"}}, "com.bloks.www.unified.profile.creation:com.bloks.www.unified.profile.creation")
+
+        res_name = None
+        for attempt in range(5):
+            res_name = self._post_action("com.bloks.www.additional.profile.plus.creation.action.name.submit", {"client_input_params": {"profile_plus_id": "0","name": name},"server_params": {"variant": 8,"referrer": "bookmark_create_action","screen": "name","INTERNAL__latency_qpl_marker_id": QPL_MARKER_ID,"INTERNAL__latency_qpl_instance_id": 81120436100051 + attempt,"creation_source": "android"}})
+            if res_name["ok"]: break
+            if "already manage" in res_name["error"].lower() or "choose a different" in res_name["error"].lower():
+                name = f"{get_random_name('3')} {random.randint(10, 99)}"
+                continue
+            break
+        if not res_name or not res_name["ok"]: return {"success": False, "error": res_name["error"] if res_name else "Unknown"}
+
+        self._push_nav(221760503)
+        self._post_app("com.bloks.www.additional.profile.plus.creation", {"client_input_params": {"profile_plus_id": "0","name": name},"server_params": {"referrer": "bookmark_create_action","creation_source": "android","variant": 8,"screen": "category"}}, "com.bloks.www.additional.profile.plus.creation:com.bloks.www.additional.profile.plus.creation")
+
+        cat_id = random.choice(["2700", "2201", "2903", "180164648685982", "2612", "1602", "1109", "1615"])
+        res_cat = self._post_action("com.bloks.www.additional.profile.plus.creation.action.category.submit", {"client_input_params": {"entrypoint_logging_data": {"fb_profile_editing_session_entry_point": None,"field_edit_screen_entry_point": None},"profile_plus_id": "0","cp_upsell_declined": 0,"off_platform_creator_reachout_id": "","session_id": None,"category_ids": [cat_id],"nav_chain": ";".join(self.nav_chain)},"server_params": {"referrer": "bookmark_create_action","INTERNAL__latency_qpl_marker_id": QPL_MARKER_ID,"creation_source": "android","name": name,"variant": 8,"screen": "category","INTERNAL__latency_qpl_instance_id": 81148081300063}})
+        if not res_cat["ok"]: return {"success": False, "error": res_cat["error"]}
+        pid = res_cat["state_vars"].get("ADDITIONAL_PROFILE_PLUS_CREATION:profile_plus_id", "").strip()
+        if not pid or pid == "0": return {"success": False, "error": "Không lấy được Page ID"}
+
+        self._push_nav(97068164)
+        self._post_app("com.bloks.www.additional.profile.plus.creation", {"server_params": {"referrer": "bookmark_create_action","profile_plus_id": pid,"creation_source": "android","name": name,"variant": 8,"screen": "self_classification"}}, "com.bloks.www.additional.profile.plus.creation:com.bloks.www.additional.profile.plus.creation")
+        self._post_action("com.bloks.www.bloks.profile.classification.create_or_update", {"client_input_params": {},"server_params": {"INTERNAL__latency_qpl_marker_id": QPL_MARKER_ID,"INTERNAL__latency_qpl_instance_id": 81189111800104,"classification": "creator","bypass_cooldown": 1,"owner_id": pid}})
+        self._push_nav(84414042)
+
+        self._post_app("com.bloks.www.additional.profile.plus.creation", {"server_params": {"referrer": "bookmark_create_action","profile_plus_id": pid,"creation_source": "android","name": name,"variant": 8,"screen": "details"}}, "com.bloks.www.additional.profile.plus.creation:com.bloks.www.additional.profile.plus.creation")
+        self._post_action("com.bloks.www.additional.profile.plus.creation.action.details.submit", {"client_input_params": {"zip": "","website": "","profile_plus_id": pid,"street": "","bio": "","regular_hours_type": 0,"phone_number": "","email": "","city_id": "0"},"server_params": {"variant": 8,"referrer": "bookmark_create_action","screen": "details","INTERNAL__latency_qpl_marker_id": QPL_MARKER_ID,"INTERNAL__latency_qpl_instance_id": 81194880900051,"creation_source": "android"}})
+        self._push_nav(221646132)
+
+        self._post_app("com.bloks.www.additional.profile.plus.creation", {"client_input_params": {"profile_plus_id": pid,"name": name},"server_params": {"referrer": "bookmark_create_action","creation_source": "android","variant": 8,"screen": "photo_and_cta"}}, "com.bloks.www.additional.profile.plus.creation:com.bloks.www.additional.profile.plus.creation")
+        self._post_action("com.bloks.www.additional.profile.plus.creation.action.photo_and_cta.submit", {"client_input_params": {"website": "","profile_plus_id": pid},"server_params": {"variant": 8,"referrer": "bookmark_create_action","screen": "photo_and_cta","INTERNAL__latency_qpl_marker_id": QPL_MARKER_ID,"INTERNAL__latency_qpl_instance_id": 81205174800051,"creation_source": "android"}})
+        self._push_nav(218013417)
+
+        self._post_app("com.bloks.www.additional.profile.plus.creation", {"client_input_params": {"profile_plus_id": pid,"name": name},"server_params": {"referrer": "bookmark_create_action","creation_source": "android","variant": 8,"screen": "invite_friends"}}, "com.bloks.www.additional.profile.plus.creation:com.bloks.www.additional.profile.plus.creation")
+        self._push_nav(72095934)
+
+        self._post_app("com.bloks.www.additional.profile.plus.creation", {"client_input_params": {"profile_plus_id": pid,"name": name},"server_params": {"referrer": "bookmark_create_action","creation_source": "android","variant": 8,"screen": "notifications"}}, "com.bloks.www.additional.profile.plus.creation:com.bloks.www.additional.profile.plus.creation")
+        
+        res_final = self._post_action("com.bloks.www.additional.profile.plus.creation.action.notifications.submit", {"client_input_params": {"email_notifications_set": 1,"profile_plus_id": pid,"cross_profile_notifications_set": 1},"server_params": {"referrer": "bookmark_create_action","INTERNAL__latency_qpl_marker_id": QPL_MARKER_ID,"creation_source": "android","variant": 8,"screen": "notifications","INTERNAL__latency_qpl_instance_id": 81271129300051,"is_last_step_of_page_creation": 1}})
+        if not res_final["ok"]: return {"success": False, "error": res_final["error"]}
+        
+        prof = res_final.get("new_page_profile") or {}
+        return {"success": True, "page_id": prof.get("page_id") or pid, "page_name": prof.get("page_name") or name, "page_access_token": prof.get("access_token", ""), "page_cookie": prof.get("cookie_string", "")}
+
+
+def run_reg_cookie_account(chat_id, thread_id, raw_line, initial_proxy, proxies_list, proxy_index_ref, sl_pro5, dl, name_type, avatar_mode, custom_link):
     current_ip = ["..."]
     last_success_line = ""  
-
     def status(text, emoji="🔄", ip=None, is_success=False):
         nonlocal last_success_line
         ip_val = ip if ip is not None else current_ip[0]
@@ -797,6 +967,47 @@ def run_reg_account(chat_id, thread_id, raw_line, initial_proxy, proxies_list, p
         status(f"Hoàn tất ({success_count}/{sl_pro5})", "🏁", is_success=True)
     except Exception as e: status(f"Lỗi: {str(e)[:100]}", "❌")
 
+def run_reg_token_account(chat_id, thread_id, token, initial_proxy, sl_pro5, dl, name_type):
+    current_ip = ["..."]
+    last_success_line = ""  
+    def status(text, emoji="🔄", ip=None, is_success=False):
+        nonlocal last_success_line
+        ip_val = ip if ip is not None else current_ip[0]
+        if is_success:
+            last_success_line = f"{emoji} L{thread_id}: IP: {ip_val}  {text}"
+            update_status(chat_id, thread_id, last_success_line); return
+        current_line = f"{emoji} {text}" if text.startswith(("Chờ", "Đang tạo")) else f"{emoji} L{thread_id}: IP: {ip_val}  {text}"
+        final_text = f"{last_success_line}\n{current_line}" if last_success_line else current_line
+        update_status(chat_id, thread_id, final_text)
+
+    if STOP_FLAGS.get(chat_id): return
+    status("Đang khởi tạo...", "🔄", "...")
+    try:
+        current_ip[0] = get_real_ip(initial_proxy)
+        flow = PageCreationFlowToken(access_token=token, proxy=initial_proxy)
+        success_count = 0
+        for i in range(1, int(sl_pro5) + 1):
+            if STOP_FLAGS.get(chat_id): status("Đã dừng khẩn cấp!", "🛑", is_success=True); return
+            name = get_random_name(name_type)
+            status(f"Đang tạo Pro5 {i}/{sl_pro5}: {name}...", "🔄")
+            res = flow.create_page(name)
+            
+            if res.get("success"):
+                success_count += 1
+                status(f"Đã tạo Pro5 {success_count}/{sl_pro5}: {res.get('page_name')} (ID: {res.get('page_id')})", "✅", is_success=True)
+            else:
+                status(f"Fail ({name}): {res.get('error', 'Lỗi không xác định')}", "❌"); return
+
+            if i < int(sl_pro5):
+                wait = dl + random.randint(2, 5); wait_text = f"{wait}s" + (f" (~{wait//60} phút)" if wait >= 60 else "")
+                status(f"Chờ {wait_text} trước page tiếp theo...", "⏳")
+                for _ in range(wait):
+                    if STOP_FLAGS.get(chat_id): status("Đã dừng khẩn cấp!", "🛑", is_success=True); return
+                    time.sleep(1)
+        status(f"Hoàn tất ({success_count}/{sl_pro5})", "🏁", is_success=True)
+    except Exception as e: status(f"Lỗi: {str(e)[:100]}", "❌")
+
+
 # ==================== BATCH RUNNER & SUMMARY ====================
 def run_batch(chat_id, user_id, mode, data):
     STOP_FLAGS[chat_id] = False
@@ -805,12 +1016,19 @@ def run_batch(chat_id, user_id, mode, data):
     
     try:
         with ThreadPoolExecutor(max_workers=data.get("max_threads", 1)) as ex:
-            if mode == "reg":
+            if mode == "reg_cookie":
                 lines, proxies = data["accounts"], data["proxies"]; proxy_index_ref = [0]
                 for index, raw_line in enumerate(lines):
                     if STOP_FLAGS.get(chat_id): break 
                     initial_proxy = proxies[index % len(proxies)] if proxies else None
-                    ex.submit(run_reg_account, chat_id, index + 1, raw_line, initial_proxy, proxies, proxy_index_ref, data["sl_pro5"], data["dl"], data["name_type"], data["avatar_mode"], data["custom_link"])
+                    ex.submit(run_reg_cookie_account, chat_id, index + 1, raw_line, initial_proxy, proxies, proxy_index_ref, data["sl_pro5"], data["dl"], data["name_type"], data["avatar_mode"], data["custom_link"])
+                    if data.get("thread_delay", 0) > 0: time.sleep(data["thread_delay"])
+            elif mode == "reg_token":
+                tokens, proxies = data["accounts"], data["proxies"]; proxy_index_ref = [0]
+                for index, token in enumerate(tokens):
+                    if STOP_FLAGS.get(chat_id): break 
+                    initial_proxy = proxies[index % len(proxies)] if proxies else None
+                    ex.submit(run_reg_token_account, chat_id, index + 1, token, initial_proxy, data["sl_pro5"], data["dl"], data["name_type"])
                     if data.get("thread_delay", 0) > 0: time.sleep(data["thread_delay"])
             elif mode == "transfer":
                 creds = data["accounts"]
@@ -827,13 +1045,8 @@ def run_batch(chat_id, user_id, mode, data):
             total_ok = sum(r.get("ok", 0) for r in results_dict.values())
             total_fail = sum(r.get("fail", 0) for r in results_dict.values())
             total_processed = total_ok + total_fail
-            
             title = "CHUYỂN PAGE" if mode == "transfer" else "GỠ ADMIN"
-            summary = f"📊 **TỔNG KẾT {title}**\n\n"
-            summary += f"Tổng số Page xử lý: {total_processed}\n"
-            summary += f"✅ Thành công: {total_ok}\n"
-            summary += f"❌ Thất bại: {total_fail}\n"
-            
+            summary = f"📊 **TỔNG KẾT {title}**\n\nTổng số Page xử lý: {total_processed}\n✅ Thành công: {total_ok}\n❌ Thất bại: {total_fail}\n"
             error_lines = []
             for tid in sorted(results_dict.keys()):
                 r = results_dict[tid]
@@ -842,12 +1055,8 @@ def run_batch(chat_id, user_id, mode, data):
                     reason = r.get("reason", "Lỗi không xác định")
                     if not reason: reason = "Lỗi"
                     error_lines.append(f"- L{tid} (UID: {uid_str}): {reason}")
-                    
-            if error_lines:
-                summary += "\n⚠️ **Chi tiết lỗi:**\n" + "\n".join(error_lines)
-            else:
-                summary += "\n🎉 Tuyệt vời! Không có luồng nào bị lỗi."
-                
+            if error_lines: summary += "\n⚠️ **Chi tiết lỗi:**\n" + "\n".join(error_lines)
+            else: summary += "\n🎉 Tuyệt vời! Không có luồng nào bị lỗi."
             bot.send_message(chat_id, summary, parse_mode="Markdown")
             
         bot.send_message(chat_id, "🏁 Đã kết thúc phiên chạy!", reply_markup=types.ReplyKeyboardRemove())
@@ -876,8 +1085,20 @@ def avatar_menu():
     return m
 
 def admin_panel_menu():
-    m = types.InlineKeyboardMarkup(row_width=1)
-    m.add(types.InlineKeyboardButton("📋 Danh sách user", callback_data="admin_list"), types.InlineKeyboardButton("📖 Hướng dẫn lệnh", callback_data="admin_help"))
+    m = types.InlineKeyboardMarkup(row_width=2)
+    m.add(
+        types.InlineKeyboardButton("📋 DS User", callback_data="admin_list"), 
+        types.InlineKeyboardButton("📖 Hướng dẫn", callback_data="admin_help")
+    )
+    m.add(
+        types.InlineKeyboardButton("➕ Thêm hạn", callback_data="admin_add_time"),
+        types.InlineKeyboardButton("➖ Xóa user", callback_data="admin_remove_user")
+    )
+    return m
+
+def reg_method_menu():
+    m = types.InlineKeyboardMarkup(row_width=2)
+    m.add(types.InlineKeyboardButton("🍪 Bằng Cookie", callback_data="reg_m_cookie"), types.InlineKeyboardButton("🔑 Bằng Token", callback_data="reg_m_token"))
     return m
 
 # ==================== TEXT & COMMANDS ====================
@@ -988,27 +1209,68 @@ def handle_callback(call):
         bot.send_message(chat_id, text, parse_mode="Markdown"); bot.answer_callback_query(call.id); return
 
     if data == "act_start":
-        user_data[chat_id] = {"mode": "reg", "step": "proxies", "data": {"proxies": []}}
+        bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=reg_method_menu())
+        bot.answer_callback_query(call.id); return
+        
+    if data == "reg_m_cookie":
+        user_data[chat_id] = {"mode": "reg_cookie", "step": "proxies", "data": {"proxies": []}}
         bot.send_message(chat_id, "📡 *Bước 1/8:* Nhập danh sách Proxy (text/file) hoặc Bỏ qua:", reply_markup=step_menu(skip=True), parse_mode="Markdown"); bot.answer_callback_query(call.id); return
-    elif data == "act_tr_start":
+        
+    if data == "reg_m_token":
+        user_data[chat_id] = {"mode": "reg_token", "step": "proxies", "data": {"proxies": []}}
+        bot.send_message(chat_id, "📡 *Bước 1/7:* Nhập danh sách Proxy (text/file) hoặc Bỏ qua:", reply_markup=step_menu(skip=True), parse_mode="Markdown"); bot.answer_callback_query(call.id); return
+
+    if data == "act_tr_start":
         user_data[chat_id] = {"mode": "transfer", "step": "tr_acc", "data": {}}
         bot.send_message(chat_id, "📤 *Chuyển Page*\nNhập danh sách Acc nguồn (uid|pass|cookie|token...)\n💬 Gửi *text* hoặc *file .txt*:", reply_markup=step_menu(), parse_mode="Markdown"); bot.answer_callback_query(call.id); return
-    elif data == "act_del_start":
+    if data == "act_del_start":
         user_data[chat_id] = {"mode": "delete", "step": "del_acc", "data": {}}
         bot.send_message(chat_id, "🗑 *Gỡ Admin Page*\nNhập danh sách Acc cần gỡ (uid|pass|cookie|token...)\n💬 Gửi *text* hoặc *file .txt*:", reply_markup=step_menu(), parse_mode="Markdown"); bot.answer_callback_query(call.id); return
 
+    # --- Admin Panel Callbacks ---
+    if data == "admin_add_time":
+        if not is_admin(user_id): bot.answer_callback_query(call.id, "❌ Không có quyền"); return
+        user_data[chat_id] = {"mode": "admin", "step": "admin_add_id"}
+        bot.send_message(chat_id, "➕ Vui lòng nhập **ID Telegram** của user cần thêm thời gian:", parse_mode="Markdown"); bot.answer_callback_query(call.id); return
+
+    if data == "admin_remove_user":
+        if not is_admin(user_id): bot.answer_callback_query(call.id, "❌ Không có quyền"); return
+        user_data[chat_id] = {"mode": "admin", "step": "admin_remove_id"}
+        bot.send_message(chat_id, "➖ Vui lòng nhập **ID Telegram** của user cần xoá khỏi bot:", parse_mode="Markdown"); bot.answer_callback_query(call.id); return
+
+    if data == "admin_list":
+        if not is_admin(user_id): bot.answer_callback_query(call.id, "❌ Không có quyền"); return
+        if not ALLOWED_USERS: txt = "📭 Chưa có user nào được duyệt."
+        else:
+            lines = [f"• `{uid}` — {format_remaining(exp)}" for uid, exp in sorted(ALLOWED_USERS.items())]
+            txt = f"📋 *User được duyệt* ({len(ALLOWED_USERS)}):\n\n" + "\n".join(lines)
+        bot.send_message(chat_id, txt, parse_mode="Markdown")
+        bot.answer_callback_query(call.id); return
+
+    if data == "admin_help":
+        bot.send_message(chat_id, ADMIN_HELP, parse_mode="Markdown")
+        bot.answer_callback_query(call.id); return
+
+    # --- Flow Callbacks ---
     st = user_data.get(chat_id)
     if not st: return
 
     if data == "act_skip":
         if st["step"] == "proxies":
             st["data"]["proxies"] = []; st["step"] = "accounts"
-            bot.send_message(chat_id, "✅ Bỏ qua proxy.\n\n📝 *Bước 2/8:* Nhập danh sách Cookie (text/file):", reply_markup=step_menu(), parse_mode="Markdown")
+            bot.send_message(chat_id, "✅ Bỏ qua proxy.\n\n📝 *Bước 2:* Nhập danh sách dữ liệu (text/file):", reply_markup=step_menu(), parse_mode="Markdown")
         bot.answer_callback_query(call.id); return
 
     if data.startswith("name_"):
-        st["data"]["name_type"] = data.split("_")[1]; st["step"] = "avatar_mode"
-        bot.edit_message_text("📸 *Bước 8/8:* Chọn kiểu Avatar:", chat_id, call.message.message_id, reply_markup=avatar_menu(), parse_mode="Markdown"); bot.answer_callback_query(call.id); return
+        st["data"]["name_type"] = data.split("_")[1]
+        if st["mode"] == "reg_token":
+            st["step"] = "run"
+            bot.edit_message_text("🚀 Bắt đầu chạy...", chat_id, call.message.message_id)
+            start_running(chat_id, user_id, st["mode"], st["data"])
+        else:
+            st["step"] = "avatar_mode"
+            bot.edit_message_text("📸 *Bước 8/8:* Chọn kiểu Avatar:", chat_id, call.message.message_id, reply_markup=avatar_menu(), parse_mode="Markdown")
+        bot.answer_callback_query(call.id); return
 
     if data.startswith("avatar_"):
         mode = data.split("_")[1]; st["data"]["avatar_mode"] = mode
@@ -1038,8 +1300,7 @@ def cmd_shortcuts(msg):
         no_permission_reply(msg.chat.id, msg.from_user.id); return
     chat_id = msg.chat.id
     if msg.text.startswith('/reg'):
-        user_data[chat_id] = {"mode": "reg", "step": "proxies", "data": {"proxies": []}}
-        bot.send_message(chat_id, "📡 *Bước 1/8:* Nhập danh sách Proxy (text/file) hoặc Bỏ qua:", reply_markup=step_menu(skip=True), parse_mode="Markdown")
+        bot.send_message(chat_id, "🛠 Chọn phương thức Reg Page:", reply_markup=reg_method_menu())
     elif msg.text.startswith('/chuyenpage'):
         user_data[chat_id] = {"mode": "transfer", "step": "tr_acc", "data": {}}
         bot.send_message(chat_id, "📤 *Chuyển Page*\nNhập danh sách Acc nguồn (uid|pass|cookie|token...)\n💬 Gửi *text* hoặc *file .txt*:", reply_markup=step_menu(), parse_mode="Markdown")
@@ -1061,7 +1322,6 @@ def cmd_status(msg):
     text = f"📊 Trạng thái: *{rb['status']}*\n⏱ Thời gian: `{int(time.time() - rb['start'])}s`" if rb else "ℹ️ Không có batch nào."
     bot.send_message(chat_id, text, parse_mode="Markdown")
 
-# Hàm này CHỈ bắt các văn bản thường (không bắt lệnh /...)
 @bot.message_handler(func=lambda msg: msg.text and not msg.text.startswith('/'))
 def handle_text(msg):
     chat_id, user_id = msg.chat.id, msg.from_user.id
@@ -1075,39 +1335,82 @@ def handle_text(msg):
         bot.send_message(chat_id, "👉 Bấm /start để mở Menu.", reply_markup=types.ReplyKeyboardRemove()); return
 
     step = st["step"]
+    mode = st["mode"]
 
-    # --- LUỒNG REG PAGE ---
+    # --- ADMIN FLOWS ---
+    if mode == "admin":
+        if step == "admin_add_id":
+            if not text.isdigit(): bot.reply_to(msg, "❌ ID phải là số. Nhập lại:"); return
+            st["data"]["target_id"] = int(text); st["step"] = "admin_add_time"
+            bot.reply_to(msg, "⏰ Nhập thời hạn (VD: `1h`, `1d`, `7d`, `1m`):", parse_mode="Markdown")
+        elif step == "admin_add_time":
+            dur = parse_duration(text)
+            if not dur: bot.reply_to(msg, "❌ Sai định dạng. Nhập lại (VD: 1h, 1d, 1m):"); return
+            uid = st["data"]["target_id"]
+            ALLOWED_USERS[uid] = dur
+            save_allowed_users()
+            user_data.pop(chat_id, None)
+            bot.reply_to(msg, f"✅ Đã thêm thời gian cho `{uid}`.\nHạn mới: {format_datetime(dur)}", reply_markup=admin_panel_menu(), parse_mode="Markdown")
+            try: bot.send_message(uid, f"🎉 Admin đã gia hạn tài khoản của bạn đến: {format_datetime(dur)}")
+            except: pass
+        elif step == "admin_remove_id":
+            if not text.isdigit(): bot.reply_to(msg, "❌ ID phải là số. Nhập lại:"); return
+            uid = int(text)
+            if uid in ALLOWED_USERS:
+                del ALLOWED_USERS[uid]; save_allowed_users()
+                bot.reply_to(msg, f"✅ Đã xoá user `{uid}` khỏi bot.", reply_markup=admin_panel_menu(), parse_mode="Markdown")
+                try: bot.send_message(uid, "⚠️ Quyền sử dụng bot của bạn đã bị thu hồi.")
+                except: pass
+            else:
+                bot.reply_to(msg, f"⚠️ User `{uid}` không có trong danh sách.")
+            user_data.pop(chat_id, None)
+        return
+
+    # --- REG & OTHER FLOWS ---
     if step == "proxies":
         st["data"]["proxies"] = [l.strip() for l in text.splitlines() if l.strip()]
         st["step"] = "accounts"
-        bot.reply_to(msg, f"✅ Đã lưu {len(st['data']['proxies'])} proxy.\n\n📝 *Bước 2/8:* Nhập Cookie:", reply_markup=step_menu(), parse_mode="Markdown")
+        if mode == "reg_token": bot.reply_to(msg, f"✅ Đã lưu {len(st['data']['proxies'])} proxy.\n\n📝 *Bước 2/7:* Nhập danh sách Token:", reply_markup=step_menu(), parse_mode="Markdown")
+        else: bot.reply_to(msg, f"✅ Đã lưu {len(st['data']['proxies'])} proxy.\n\n📝 *Bước 2/8:* Nhập Cookie:", reply_markup=step_menu(), parse_mode="Markdown")
+        
     elif step == "accounts":
-        accs = [l.strip() for l in text.splitlines() if l.strip()]
-        if not accs: bot.reply_to(msg, "❌ Danh sách trống."); return
-        st["data"]["accounts"] = accs; st["step"] = "sl_pro5"
-        bot.reply_to(msg, f"✅ Đã nhận {len(accs)} acc.\n\n🔢 *Bước 3/8:* Nhập số Pro5/acc:", reply_markup=step_menu(), parse_mode="Markdown")
+        if mode == "reg_token":
+            tokens = extract_tokens_from_input(text)
+            if not tokens: bot.reply_to(msg, "❌ Không tìm thấy Token EAAAA... hợp lệ."); return
+            st["data"]["accounts"] = tokens; st["step"] = "sl_pro5"
+            bot.reply_to(msg, f"✅ Đã nhận {len(tokens)} token.\n\n🔢 *Bước 3/7:* Nhập số Pro5/token:", reply_markup=step_menu(), parse_mode="Markdown")
+        else:
+            accs = [l.strip() for l in text.splitlines() if l.strip()]
+            if not accs: bot.reply_to(msg, "❌ Danh sách trống."); return
+            st["data"]["accounts"] = accs; st["step"] = "sl_pro5"
+            bot.reply_to(msg, f"✅ Đã nhận {len(accs)} acc.\n\n🔢 *Bước 3/8:* Nhập số Pro5/acc:", reply_markup=step_menu(), parse_mode="Markdown")
+            
     elif step == "sl_pro5":
         if not text.isdigit(): bot.reply_to(msg, "❌ Phải là số:"); return
         st["data"]["sl_pro5"] = int(text); st["step"] = "dl"
-        bot.reply_to(msg, "⏱ *Bước 4/8:* Delay mỗi lần reg (giây):", reply_markup=step_menu(), parse_mode="Markdown")
+        step_num = "4/7" if mode == "reg_token" else "4/8"
+        bot.reply_to(msg, f"⏱ *Bước {step_num}:* Delay mỗi lần reg (giây):", reply_markup=step_menu(), parse_mode="Markdown")
     elif step == "dl":
         if not text.isdigit(): bot.reply_to(msg, "❌ Phải là số:"); return
         st["data"]["dl"] = int(text); st["step"] = "max_threads"
-        bot.reply_to(msg, "🔀 *Bước 5/8:* Số luồng chạy:", reply_markup=step_menu(), parse_mode="Markdown")
+        step_num = "5/7" if mode == "reg_token" else "5/8"
+        bot.reply_to(msg, f"🔀 *Bước {step_num}:* Số luồng chạy:", reply_markup=step_menu(), parse_mode="Markdown")
     elif step == "max_threads":
         if not text.isdigit(): bot.reply_to(msg, "❌ Phải là số:"); return
         st["data"]["max_threads"] = int(text); st["step"] = "thread_delay"
-        bot.reply_to(msg, "⏱ *Bước 6/8:* Delay giữa các luồng (0 = không delay):", reply_markup=step_menu(), parse_mode="Markdown")
+        step_num = "6/7" if mode == "reg_token" else "6/8"
+        bot.reply_to(msg, f"⏱ *Bước {step_num}:* Delay giữa các luồng (0 = không delay):", reply_markup=step_menu(), parse_mode="Markdown")
     elif step == "thread_delay":
         try: st["data"]["thread_delay"] = float(text)
         except: bot.reply_to(msg, "❌ Phải là số:"); return
         st["step"] = "name_type"
-        bot.send_message(chat_id, "📛 *Bước 7/8:* Chọn loại tên:", reply_markup=name_menu(), parse_mode="Markdown")
+        step_num = "7/7" if mode == "reg_token" else "7/8"
+        bot.send_message(chat_id, f"📛 *Bước {step_num}:* Chọn loại tên:", reply_markup=name_menu(), parse_mode="Markdown")
     elif step == "custom_link":
         st["data"]["custom_link"] = text; st["step"] = "run"
         bot.reply_to(msg, "🚀 Bắt đầu chạy...")
         start_running(chat_id, user_id, st["mode"], st["data"])
-
+        
     # --- LUỒNG CHUYỂN PAGE ---
     elif step == "tr_acc":
         try:
@@ -1175,11 +1478,17 @@ def handle_document(msg):
         if not lines: bot.reply_to(msg, "❌ File rỗng."); return
 
         if step == "accounts":
-            st["data"]["accounts"] = lines; st["step"] = "sl_pro5"
-            bot.reply_to(msg, f"✅ Đã nhận {len(lines)} acc.\n\n🔢 Nhập số Pro5/acc:", reply_markup=step_menu(), parse_mode="Markdown")
+            if st["mode"] == "reg_token":
+                tokens = extract_tokens_from_input(content)
+                if not tokens: bot.reply_to(msg, "❌ Không tìm thấy Token EAAAA... hợp lệ."); return
+                st["data"]["accounts"] = tokens; st["step"] = "sl_pro5"
+                bot.reply_to(msg, f"✅ Đã nhận {len(tokens)} token.\n\n🔢 *Bước 3/7:* Nhập số Pro5/token:", reply_markup=step_menu(), parse_mode="Markdown")
+            else:
+                st["data"]["accounts"] = lines; st["step"] = "sl_pro5"
+                bot.reply_to(msg, f"✅ Đã nhận {len(lines)} acc.\n\n🔢 *Bước 3/8:* Nhập số Pro5/acc:", reply_markup=step_menu(), parse_mode="Markdown")
         elif step == "proxies":
             st["data"]["proxies"] = lines; st["step"] = "accounts"
-            bot.reply_to(msg, f"✅ Đã nhận {len(lines)} proxy.\n\n📝 Nhập Cookie:", reply_markup=step_menu(), parse_mode="Markdown")
+            bot.reply_to(msg, f"✅ Đã nhận {len(lines)} proxy.\n\n📝 *Bước 2:* Nhập danh sách dữ liệu (text/file):", reply_markup=step_menu(), parse_mode="Markdown")
         elif step == "tr_acc":
             accs = [parse_account_line(l) for l in lines]; accs = [a for a in accs if a["uid"]]
             st["data"]["accounts"] = accs; st["step"] = "tr_auto"
@@ -1196,7 +1505,8 @@ def handle_document(msg):
 def start_running(chat_id, user_id, mode, data):
     st = user_data.pop(chat_id, None)
     if not st: return
-    if mode == "reg": msg = f"🚀 *REG PAGE*\nAcc: {len(data['accounts'])} | Pro5/acc: {data['sl_pro5']} | Threads: {data['max_threads']}"
+    if mode == "reg_token": msg = f"🚀 *REG PAGE (BẰNG TOKEN)*\nToken: {len(data['accounts'])} | Pro5/acc: {data['sl_pro5']} | Threads: {data['max_threads']}"
+    elif mode == "reg_cookie": msg = f"🚀 *REG PAGE (BẰNG COOKIE)*\nAcc: {len(data['accounts'])} | Pro5/acc: {data['sl_pro5']} | Threads: {data['max_threads']}"
     elif mode == "transfer": msg = f"🚀 *CHUYỂN PAGE*\nAcc: {len(data['accounts'])} | Auto Accept: {data['auto_accept']} | Delay: {data['delay']}s"
     elif mode == "delete": msg = f"🚀 *GỠ ADMIN PAGE*\nAcc: {len(data['accounts'])} | Delay: {data['delay']}s"
     bot.send_message(chat_id, msg, parse_mode="Markdown")
