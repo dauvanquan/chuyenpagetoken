@@ -821,8 +821,9 @@ def parse_bloks_action_response(resp_json):
     return res
 
 class PageCreationFlowToken:
-    def __init__(self, token, proxy=""):
-        self.token = token
+    # FIX LỖI TẠI ĐÂY: Thêm cả access_token và token để không bị lỗi keyword argument
+    def __init__(self, token=None, access_token=None, proxy=""):
+        self.token = token or access_token
         self.session = requests.Session()
         px = format_proxy(proxy)
         if px: self.session.proxies = {"http": px, "https": px}
@@ -984,7 +985,8 @@ def run_reg_token_account(chat_id, thread_id, token, initial_proxy, sl_pro5, dl,
     status("Đang khởi tạo...", "🔄", "...")
     try:
         current_ip[0] = get_real_ip(initial_proxy)
-        flow = PageCreationFlowToken(access_token=token, proxy=initial_proxy)
+        # SỬA LỖI TẠI ĐÂY
+        flow = PageCreationFlowToken(token=token, proxy=initial_proxy) 
         success_count = 0
         for i in range(1, int(sl_pro5) + 1):
             if STOP_FLAGS.get(chat_id): status("Đã dừng khẩn cấp!", "🛑", is_success=True); return
